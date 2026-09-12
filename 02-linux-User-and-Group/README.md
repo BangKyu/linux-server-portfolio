@@ -123,6 +123,8 @@ id: `user1': no such user
 
 `userdel`과 `groupdel`를 이용하여 `user1`과 `testgroup` 삭제
 
+---
+
 ## 실습 결과
  
  - `useradd`를 이용하여 새로운 사용자 계정 생성
