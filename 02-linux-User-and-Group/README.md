@@ -109,12 +109,27 @@ testgroup:x:1001:user1
 `/etc/passwd`에서 계정명, UID, GID, 홈 디렉터리, 로그인 Shell 정보 확인
 `/etc/group`에서 그룹 이름, GID, 등록된 사용자 정보 확인
 
+---
+
+### 7. 계정 및 그룹 삭제
+
+```bash
+[root@localhost ~]# userdel user1
+[root@localhost ~]# groupdel testgroup
+[root@localhost ~]# id user1
+id: `user1': no such user
+[root@localhost ~]# getent group testgroup
+```
+
+`userdel`과 `groupdel`를 이용하여 `user1`과 `testgroup` 삭제
+
 ## 실습 결과
  
- - `useradd`를 사용하여 새로운 사용자 계정 생성
- - `groupadd`를 사용하여 새로운 그룹 생성
- - `passwd`를 사용하여 사용자의 비밀번호 설정
- - `usermod -aG`를 사용하여 기존 그룹을 유지하면서 보조 그룹에 사용자 추가
- - `id`를 사용하여 사용자의 UID, GID, 그룹 소속 정보 확인
- - `su -`를 사용하여 다른 사용자의 로그인 환경 전환
- - `grep`을 사용하여`/etc/passwd`와 `/etc/group` 안에 있는 정보 확인
+ - `useradd`를 이용하여 새로운 사용자 계정 생성
+ - `groupadd`를 이용하여 새로운 그룹 생성
+ - `passwd`를 이용하여 사용자의 비밀번호 설정
+ - `usermod -aG`를 이용하여 기존 그룹을 유지하면서 보조 그룹에 사용자 추가
+ - `id`를 이용하여 사용자의 UID, GID, 그룹 소속 정보 확인
+ - `su -`를 이용하여 다른 사용자의 로그인 환경 전환
+ - `grep`을 이용하여`/etc/passwd`와 `/etc/group` 안에 있는 정보 확인
+ - `userdel`과 `groupdel`를 이용하여 사용자와 그룹 삭제
