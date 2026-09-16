@@ -1,415 +1,290 @@
-# Rocky Linux 압축 및 아카이브 실습
+# Linux 아카이브 및 압축 실습
 
-## 실습 내용
+## 실습 개요
 
-Rocky Linux에서 `gzip`, `bzip2`, `xz`를 이용한 파일 압축 및 압축 해제를 실습
-`tar`를 이용하여 여러 파일을 하나의 아카이브로 묶는 방법을 확인
+Rocky Linux에서 `tar`를 이용하여 여러 파일을 하나의 아카이브로 묶고 해제하는 방법을 실습하였다.
 
-`tar`와 `gzip`, `bzip2`를 함께 사용하여 여러 파일을 하나로 묶고 압축하는 방법과
-지정한 디렉터리에 파일을 복원하는 방법을 실습
+`gzip`, `bzip2`, `xz`를 이용하여 아카이브 파일을 압축하고 다시 해제하였으며, 각 압축 방식의 확장자와 명령어 차이를 확인하였다.
+
+`tar`와 압축 방식을 함께 사용하여 아카이브 생성과 압축을 동시에 수행하고, `-C` 옵션을 이용하여 원하는 디렉터리에 해제하였다.
 
 ---
 
-## 1. 실습 환경 구성
+## 실습 과정
 
-실습 디렉터리 생성:
+### 1. 실습 파일 확인
 
-```bash
-mkdir -p /test/archive
-cd /test/archive
-```
-
-디렉터리 권한 확인:
+`source` 디렉터리에 파일 3개가 준비된 상태에서 실습을 진행하였다.
 
 ```bash
-ls -ld /test/archive/
-```
-
-실행 결과:
-
-```text
-drwxr-xr-x. 2 root root 6  9월 13 11:57 /test/archive/
-```
-
-압축 실습을 위한 테스트 파일 생성:
-
-```bash
-seq 1 1000 > file1.txt
-seq 1 2000 > file2.txt
-seq 1 3000 > file3.txt
-
-ls -lh
-```
-
-실행 결과:
-
-```text
--rw-r--r--. 1 root root 3.9K  9월 13 11:58 file1.txt
--rw-r--r--. 1 root root 8.7K  9월 13 11:58 file2.txt
--rw-r--r--. 1 root root  14K  9월 13 11:58 file3.txt
+[root@Server-A linux-archive]# ls source/
+file1.txt  file2.txt  file3.txt
 ```
 
 ---
 
-## 2. gzip 압축 및 압축 해제
+### 2. tar 아카이브 생성
 
-`gzip`을 이용하여 `file1.txt`를 압축하였다.
-
-```bash
-gzip file1.txt
-```
-
-압축 결과:
-
-```text
--rw-r--r--. 1 root root 1.9K  9월 13 11:58 file1.txt.gz
--rw-r--r--. 1 root root 8.7K  9월 13 11:58 file2.txt
--rw-r--r--. 1 root root  14K  9월 13 11:58 file3.txt
-```
-
-압축 전후 용량:
-
-```text
-file1.txt     → 3.9K
-file1.txt.gz  → 1.9K
-```
-
-기본 `gzip` 명령을 사용하면 원본 파일이 압축 파일로 대체되는 것을 확인
-
-압축 해제:
+`source` 디렉터리의 파일들을 `backup.tar` 아카이브로 생성
 
 ```bash
-gunzip file1.txt.gz
+[root@Server-A linux-archive]# tar -cvf backup.tar source/*
+source/file1.txt
+source/file2.txt
+source/file3.txt
+
+[root@Server-A linux-archive]# ls -l
+합계 12
+-rw-r--r--. 1 root root 10240  9월 16 16:46 backup.tar
+drwxr-xr-x. 2 root root    57  9월 16 16:34 source
 ```
 
-압축 해제 결과:
+`tar`를 사용하여 'source' 디렉터리 안에 있는 모든 파일을 하나의 아카이브로 묶었다.
 
-```text
--rw-r--r--. 1 root root 3.9K  9월 13 11:58 file1.txt
--rw-r--r--. 1 root root 8.7K  9월 13 11:58 file2.txt
--rw-r--r--. 1 root root  14K  9월 13 11:58 file3.txt
-```
+사용한 옵션:
 
-→ `file1.txt.gz`가 없어지고 원본 `file1.txt`가 복원되는 것을 확인
+- `c` → 새로운 아카이브 생성
+- `v` → 작업 과정 출력
+- `f` → 아카이브 파일 이름 지정
 
 ---
 
-## 3. bzip2 압축 및 압축 해제
+### 3. tar 아카이브 내부 목록 확인
 
-`bzip2`를 이용하여 `file2.txt`를 압축
-
-```bash
-bzip2 file2.txt
-```
-
-압축 결과:
-
-```text
--rw-r--r--. 1 root root 3.9K  9월 13 11:58 file1.txt
--rw-r--r--. 1 root root 2.1K  9월 13 11:58 file2.txt.bz2
--rw-r--r--. 1 root root  14K  9월 13 11:58 file3.txt
-```
-
-압축 전후 용량:
-
-```text
-file2.txt      → 8.7K
-file2.txt.bz2  → 2.1K
-```
-
-압축 해제:
+아카이브를 해제하지 않고 내부 파일 목록 확인
 
 ```bash
-bunzip2 file2.txt.bz2
+[root@Server-A linux-archive]# tar -tvf backup.tar
+-rw-r--r-- root/root         6 2026-09-16 16:34 source/file1.txt
+-rw-r--r-- root/root         6 2026-09-16 16:34 source/file2.txt
+-rw-r--r-- root/root         6 2026-09-16 16:34 source/file3.txt
 ```
 
-압축 해제 결과:
-
-```text
--rw-r--r--. 1 root root 3.9K  9월 13 11:58 file1.txt
--rw-r--r--. 1 root root 8.7K  9월 13 11:58 file2.txt
--rw-r--r--. 1 root root  14K  9월 13 11:58 file3.txt
-```
-
-→ `file2.txt.bz2`가 없어지고 원본 `file2.txt`가 복원되는 것을 확인
+`t` 옵션을 사용하여 아카이브 내부의 파일 목록과 정보를 확인하였다.
 
 ---
 
-## 4. xz 압축 및 압축 해제
+### 4. 지정한 디렉터리에 tar 아카이브 해제
 
-`xz`를 이용하여 `file3.txt`를 압축
-
-```bash
-xz file3.txt
-```
-
-압축 결과:
-
-```text
--rw-r--r--. 1 root root 3.9K  9월 13 11:58 file1.txt
--rw-r--r--. 1 root root 8.7K  9월 13 11:58 file2.txt
--rw-r--r--. 1 root root 1.3K  9월 13 11:58 file3.txt.xz
-```
-
-압축 전후 용량:
-
-```text
-file3.txt     → 14K
-file3.txt.xz  → 1.3K
-```
-
-압축 해제:
+디렉터리를 생성하고 생성한 디렉터리에 아카이브를 해제
 
 ```bash
-unxz file3.txt.xz
+[root@Server-A linux-archive]# mkdir restore
+[root@Server-A linux-archive]# tar -xvf backup.tar -C restore
+source/file1.txt
+source/file2.txt
+source/file3.txt
 ```
 
-압축 해제 결과:
+사용한 옵션:
 
-```text
--rw-r--r--. 1 root root 3.9K  9월 13 11:58 file1.txt
--rw-r--r--. 1 root root 8.7K  9월 13 11:58 file2.txt
--rw-r--r--. 1 root root  14K  9월 13 11:58 file3.txt
-```
+- `x` → 아카이브 해제
+- `C` → 지정한 디렉터리에서 작업 수행
 
-→ `file3.txt.xz`가 없어지고 원본 `file3.txt`가 복원되는 것을 확인
+`-C restore`를 사용하여 현재 디렉터리가 아닌 `restore` 디렉터리에 아카이브를 해제하였다.
 
 ---
 
-## 5. tar 아카이브 생성
+### 5. gzip 압축 및 해제
 
-`tar`를 이용하여 파일 3개를 하나의 아카이브 파일로 묶음
-
-```bash
-tar -cvf archive.tar file1.txt file2.txt file3.txt
-```
-
-확인:
+`backup.tar` 파일을 gzip 방식으로 압축
 
 ```bash
-ls -lh
+[root@Server-A linux-archive]# gzip backup.tar
+
+[root@Server-A linux-archive]# ls -l backup.tar.gz
+-rw-r--r--. 1 root root 180  9월 16 16:46 backup.tar.gz
 ```
 
-실행 결과:
+gzip 압축 후 `.gz` 확장자가 추가되어 `backup.tar.gz`라는 파일이 생성되었다.
 
-```text
--rw-r--r--. 1 root root  30K  9월 13 12:01 archive.tar
--rw-r--r--. 1 root root 3.9K  9월 13 11:58 file1.txt
--rw-r--r--. 1 root root 8.7K  9월 13 11:58 file2.txt
--rw-r--r--. 1 root root  14K  9월 13 11:58 file3.txt
-```
-
-`tar`로 아카이브를 생성해도 원본 파일은 삭제되지 않는 것을 확인
-
-아카이브 내부 파일 확인:
+압축 파일을 다시 해제
 
 ```bash
-tar -tvf archive.tar
+[root@Server-A linux-archive]# gunzip backup.tar.gz
+
+[root@Server-A linux-archive]# ls -l backup.tar
+-rw-r--r--. 1 root root 10240  9월 16 16:46 backup.tar
 ```
 
-실행 결과:
-
-```text
--rw-r--r-- root/root      3893 2026-09-13 11:58 file1.txt
--rw-r--r-- root/root      8893 2026-09-13 11:58 file2.txt
--rw-r--r-- root/root     13893 2026-09-13 11:58 file3.txt
-```
+`gunzip`을 사용하여 압축 파일을 원래의 `backup.tar`로 압축 해제하였다.
 
 ---
 
-## 6. tar + gzip 압축
+### 6. bzip2와 xz 압축 비교
 
-`tar`와 `gzip`을 함께 사용하여 여러 파일을 하나로 묶으면서 압축
-
-```bash
-tar -czvf archive.tar.gz file1.txt file2.txt file3.txt
-```
-
-확인:
+비교를 위해 `backup.tar`를 복사
 
 ```bash
-ls -lh
+[root@Server-A linux-archive]# cp backup.tar backup-bzip2.tar
+[root@Server-A linux-archive]# cp backup.tar backup-xz.tar
 ```
 
-실행 결과:
-
-```text
--rw-r--r--. 1 root root  30K  9월 13 12:01 archive.tar
--rw-r--r--. 1 root root 6.7K  9월 13 12:02 archive.tar.gz
--rw-r--r--. 1 root root 3.9K  9월 13 11:58 file1.txt
--rw-r--r--. 1 root root 8.7K  9월 13 11:58 file2.txt
--rw-r--r--. 1 root root  14K  9월 13 11:58 file3.txt
-```
-
-용량 비교:
-
-```text
-archive.tar     → 30K
-archive.tar.gz  → 6.7K
-```
-
-압축 파일 내부 목록 확인:
+각각 bzip2와 xz 방식으로 압축
 
 ```bash
-tar -tzvf archive.tar.gz
+[root@Server-A linux-archive]# bzip2 backup-bzip2.tar
+[root@Server-A linux-archive]# xz backup-xz.tar
+
+[root@Server-A linux-archive]# ls -lh
+합계 20K
+-rw-r--r--. 1 root root 174  9월 16 17:07 backup-bzip2.tar.bz2
+-rw-r--r--. 1 root root 212  9월 16 17:07 backup-xz.tar.xz
+-rw-r--r--. 1 root root 10K  9월 16 16:46 backup.tar
+drwxr-xr-x. 3 root root  20  9월 16 16:47 restore
+drwxr-xr-x. 2 root root  57  9월 16 16:34 source
 ```
 
-실행 결과:
+각 압축 방식의 확장자:
 
-```text
--rw-r--r-- root/root      3893 2026-09-13 11:58 file1.txt
--rw-r--r-- root/root      8893 2026-09-13 11:58 file2.txt
--rw-r--r-- root/root     13893 2026-09-13 11:58 file3.txt
+- gzip → `.gz`
+- bzip2 → `.bz2`
+- xz → `.xz`
+
+압축 해제
+
+```bash
+[root@Server-A linux-archive]# bunzip2 backup-bzip2.tar.bz2
+[root@Server-A linux-archive]# unxz backup-xz.tar.xz
+
+[root@Server-A linux-archive]# ls -lh
+합계 36K
+-rw-r--r--. 1 root root 10K  9월 16 17:07 backup-bzip2.tar
+-rw-r--r--. 1 root root 10K  9월 16 17:07 backup-xz.tar
+-rw-r--r--. 1 root root 10K  9월 16 16:46 backup.tar
+drwxr-xr-x. 3 root root  20  9월 16 16:47 restore
+drwxr-xr-x. 2 root root  57  9월 16 16:34 source
 ```
 
-압축을 해제하지 않고 내부 파일 목록을 확인
+`bunzip2`, `unxz`를 사용하여 각각 원래의 tar 파일로 압축 해제되는 것을 확인하였다.
 
 ---
 
-## 7. 지정한 디렉터리에 압축 해제
+### 7. tar와 압축을 동시에 수행
 
-복원용 디렉터리 생성:
+`tar` 명령에서 압축 옵션을 함께 사용하여 아카이브 생성과 압축을 한 번에 수행
 
-```bash
-mkdir restore
-```
-
-`-C` 옵션을 이용하여 `restore` 디렉터리에 압축 파일을 해제하였다.
+#### gzip
 
 ```bash
-tar -xzvf archive.tar.gz -C restore/
+[root@Server-A linux-archive]# tar -czvf backup-gzip.tar.gz source/
+source/
+source/file1.txt
+source/file2.txt
+source/file3.txt
 ```
 
-복원 결과 확인:
+#### bzip2
 
 ```bash
-ls -lh restore/
+[root@Server-A linux-archive]# tar -cjvf backup-bzip2.tar.bz2 source/
+source/
+source/file1.txt
+source/file2.txt
+source/file3.txt
 ```
 
-실행 결과:
+#### xz
 
-```text
--rw-r--r--. 1 root root 3.9K  9월 13 11:58 file1.txt
--rw-r--r--. 1 root root 8.7K  9월 13 11:58 file2.txt
--rw-r--r--. 1 root root  14K  9월 13 11:58 file3.txt
+```bash
+[root@Server-A linux-archive]# tar -cJvf backup-xz.tar.xz source/
+source/
+source/file1.txt
+source/file2.txt
+source/file3.txt
 ```
 
-`archive.tar.gz` 내부의 파일 3개가 `restore` 디렉터리에 정상적으로 복원되는 것을 확인
+생성된 압축 파일 확인
+
+```bash
+[root@Server-A linux-archive]# ls -l
+합계 24
+-rw-r--r--. 1 root root   197  9월 16 17:15 backup-bzip2.tar.bz2
+-rw-r--r--. 1 root root   195  9월 16 17:15 backup-gzip.tar.gz
+-rw-r--r--. 1 root root   228  9월 16 17:15 backup-xz.tar.xz
+-rw-r--r--. 1 root root 10240  9월 16 16:46 backup.tar
+drwxr-xr-x. 3 root root    20  9월 16 16:47 restore
+drwxr-xr-x. 2 root root    57  9월 16 16:34 source
+```
+
+압축 방식별 `tar` 옵션:
+
+- `z` → gzip
+- `j` → bzip2
+- `J` → xz
 
 ---
 
-## 8. tar + bzip2 압축
+### 8. 압축 파일을 지정한 디렉터리에 복원
 
-`tar`와 `bzip2`를 함께 사용하여 여러 파일을 하나로 묶으면서 압축
-
-```bash
-tar -cjvf archive.tar.bz2 file1.txt file2.txt file3.txt
-```
-
-확인:
+복원 테스트를 위해 각각의 디렉터리 생성
 
 ```bash
-ls -lh
+[root@Server-A linux-archive]# mkdir restore-gzip restore-bzip2 restore-xz
 ```
 
-실행 결과:
-
-```text
--rw-r--r--. 1 root root  30K  9월 13 12:01 archive.tar
--rw-r--r--. 1 root root 6.1K  9월 13 12:03 archive.tar.bz2
--rw-r--r--. 1 root root 6.7K  9월 13 12:02 archive.tar.gz
--rw-r--r--. 1 root root 3.9K  9월 13 11:58 file1.txt
--rw-r--r--. 1 root root 8.7K  9월 13 11:58 file2.txt
--rw-r--r--. 1 root root  14K  9월 13 11:58 file3.txt
-drwxr-xr-x. 2 root root   57  9월 13 12:03 restore
-```
-
-용량 비교:
-
-```text
-archive.tar      → 30K
-archive.tar.gz   → 6.7K
-archive.tar.bz2  → 6.1K
-```
-
-아카이브 내부 파일 확인:
+각 압축 방식에 맞는 옵션을 사용하여 복원
 
 ```bash
-tar -tjvf archive.tar.bz2
+[root@Server-A linux-archive]# tar -xzvf backup-gzip.tar.gz -C restore-gzip
+source/
+source/file1.txt
+source/file2.txt
+source/file3.txt
+
+[root@Server-A linux-archive]# tar -xjvf backup-bzip2.tar.bz2 -C restore-bzip2
+source/
+source/file1.txt
+source/file2.txt
+source/file3.txt
+
+[root@Server-A linux-archive]# tar -xJvf backup-xz.tar.xz -C restore-xz
+source/
+source/file1.txt
+source/file2.txt
+source/file3.txt
 ```
 
-실행 결과:
+gzip 복원 결과 확인
 
-```text
--rw-r--r-- root/root      3893 2026-09-13 11:58 file1.txt
--rw-r--r-- root/root      8893 2026-09-13 11:58 file2.txt
--rw-r--r-- root/root     13893 2026-09-13 11:58 file3.txt
+```bash
+[root@Server-A linux-archive]# ls -l restore-gzip/source/
+합계 12
+-rw-r--r--. 1 root root 6  9월 16 16:34 file1.txt
+-rw-r--r--. 1 root root 6  9월 16 16:34 file2.txt
+-rw-r--r--. 1 root root 6  9월 16 16:34 file3.txt
 ```
 
----
+bzip2 복원 결과 확인
 
-## 9. tar 주요 옵션
-
-| 옵션 | 기능 |
-| --- | --- |
-| `-c` | 새로운 아카이브 생성 |
-| `-x` | 아카이브 해제 |
-| `-t` | 아카이브 내부 목록 확인 |
-| `-v` | 작업 과정 출력 |
-| `-f` | 아카이브 파일명 지정 |
-| `-z` | gzip 사용 |
-| `-j` | bzip2 사용 |
-| `-C` | 지정한 디렉터리에서 작업 |
-
----
-
-## 10. 주요 명령어 정리
-
-| 명령어 | 기능 |
-| --- | --- |
-| `gzip file` | gzip 압축 |
-| `gunzip file.gz` | gzip 압축 해제 |
-| `bzip2 file` | bzip2 압축 |
-| `bunzip2 file.bz2` | bzip2 압축 해제 |
-| `xz file` | xz 압축 |
-| `unxz file.xz` | xz 압축 해제 |
-| `tar -cvf archive.tar files` | 여러 파일을 하나의 tar 아카이브로 묶기 |
-| `tar -tvf archive.tar` | tar 내부 목록 확인 |
-| `tar -czvf archive.tar.gz files` | tar + gzip 압축 |
-| `tar -tzvf archive.tar.gz` | tar.gz 내부 목록 확인 |
-| `tar -xzvf archive.tar.gz` | tar.gz 압축 해제 |
-| `tar -cjvf archive.tar.bz2 files` | tar + bzip2 압축 |
-| `tar -tjvf archive.tar.bz2` | tar.bz2 내부 목록 확인 |
-| `tar -xjvf archive.tar.bz2` | tar.bz2 압축 해제 |
-| `tar ... -C directory` | 지정한 디렉터리에 복원 |
-
----
-
-## 11. 압축과 아카이브의 차이
-
-```text
-gzip / bzip2 / xz
-→ 파일의 용량을 줄이는 압축
-
-tar
-→ 여러 파일과 디렉터리를 하나의 파일로 묶는 아카이브
-
-tar + gzip
-→ 여러 파일을 하나로 묶은 뒤 gzip 압축
-
-tar + bzip2
-→ 여러 파일을 하나로 묶은 뒤 bzip2 압축
+```bash
+[root@Server-A linux-archive]# ls -l restore-bzip2/source/
+합계 12
+-rw-r--r--. 1 root root 6  9월 16 16:34 file1.txt
+-rw-r--r--. 1 root root 6  9월 16 16:34 file2.txt
+-rw-r--r--. 1 root root 6  9월 16 16:34 file3.txt
 ```
+
+xz 복원 결과 확인
+
+```bash
+[root@Server-A linux-archive]# ls -l restore-xz/source/
+합계 12
+-rw-r--r--. 1 root root 6  9월 16 16:34 file1.txt
+-rw-r--r--. 1 root root 6  9월 16 16:34 file2.txt
+-rw-r--r--. 1 root root 6  9월 16 16:34 file3.txt
+```
+
+gzip, bzip2, xz 방식으로 생성한 압축 파일이 모두 정상적으로 복원되는 것을 확인하였다.
 
 ---
 
 ## 실습 결과
 
-`gzip`, `bzip2`, `xz`를 이용하여 파일을 압축하고 다시 원본 파일로 복원하는 과정을 확인하였다.
-
-`tar`를 이용하여 여러 파일을 하나의 아카이브로 묶었으며, 아카이브 생성 후에도 원본 파일이 유지되는 것을 확인하였다.
-
-또한 `tar`와 `gzip`, `bzip2`를 함께 사용하여 여러 파일을 하나의 압축 파일로 생성하고,
-`-t` 옵션으로 압축을 해제하지 않고 내부 파일 목록을 확인하였다.
-
-마지막으로 `-C` 옵션을 이용하여 압축 파일을 원하는 디렉터리에 복원하는 방법을 확인하였다.
+- `tar`를 이용하여 여러 파일을 하나의 아카이브로 생성
+- `tar -t`를 이용하여 아카이브를 해제하지 않고 내부 파일 목록 확인
+- `tar -x`와 `-C` 옵션을 이용하여 지정한 디렉터리에 아카이브 복원
+- `gzip`, `bzip2`, `xz`를 이용한 압축 및 압축 해제 실습
+- `tar`의 `z`, `j`, `J` 옵션을 이용하여 아카이브 생성과 압축을 동시에 수행
+- gzip, bzip2, xz 압축 파일을 각각 별도의 디렉터리에 복원하여 원본 파일 확인
+- `tar`는 파일을 하나의 아카이브로 묶는 기능이고, gzip·bzip2·xz는 데이터를 압축하는 기능임을 확인
