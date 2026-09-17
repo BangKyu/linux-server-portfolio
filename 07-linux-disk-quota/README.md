@@ -1,825 +1,701 @@
-# Linux Disk Quota 실습
+# Linux Disk Quota 사용자 및 그룹 용량 제한 실습
 
-## 1. 실습 목표
+## 실습 개요
 
-Linux의 Disk Quota를 이용하여 사용자와 그룹별로 디스크 사용량을 제한하고 실제 제한 동작을 확인한다.
+Rocky Linux에서 Disk Quota를 이용하여 사용자와 그룹의 디스크 사용량 및 파일 개수를 제한하는 방법을 실습하였다.
 
-이번 실습에서는 다음 항목을 확인하였다.
+100GB 디스크를 50GB씩 분할하여 각각 `/githome`, `/winhome`에 마운트한 뒤 다음 항목을 확인하였다.
 
-- ext4 파일시스템에 Quota 기능 활성화
-- User Block Quota 설정
-- Soft Limit / Hard Limit / Grace Period 확인
-- Group Block Quota 설정
-- 여러 사용자의 디스크 사용량을 그룹 단위로 제한
-- User Inode Quota 설정
-- 파일 개수 제한 확인
-- Hard Limit 초과 시 실제 쓰기 차단 확인
+- User Quota를 이용한 사용자별 디스크 용량 제한
+- Soft Limit / Hard Limit / Grace Period 동작
+- Inode Quota를 이용한 파일 개수 제한
+- Group Quota를 이용한 그룹 전체 용량 제한
+- SetGID를 이용한 그룹 소유권 상속
+- 여러 사용자의 디스크 사용량이 하나의 Group Quota로 합산되는 과정
 
 ---
 
-## 2. 실습 구성
+## 실습 과정
 
-Quota 실습용으로 `/dev/sdc` 10GB 디스크를 사용하였다.
+### 1. 실습용 디스크 확인 및 quota 설치 확인
 
-```text
-/dev/sdc 10G
-├── /dev/sdc1 5G
-│   └── ext4
-│       └── /githome
-│           └── User Quota
-│
-└── /dev/sdc2 5G
-    └── ext4
-        └── /winhome
-            └── Group Quota
-```
-
----
-
-## 3. 파티션 생성
-
-`fdisk`를 사용하여 `/dev/sdc`를 두 개의 5GB 파티션으로 구성하였다.
+100GB 크기의 `/dev/sdd` 디스크를 사용하였다.
 
 ```bash
-fdisk /dev/sdc
+[root@Server-A ~]# lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS /dev/sdd
+NAME  SIZE TYPE FSTYPE MOUNTPOINTS
+sdd   100G disk
+
+[root@Server-A ~]# rpm -qa | grep quota
+quota-nls-4.09-4.el9.noarch
+quota-4.09-4.el9.x86_64
 ```
 
-파티션 확인 결과:
+---
+
+### 2. 50GB 파티션 2개 생성
+
+`fdisk`를 이용하여 `/dev/sdd`를 50GB씩 두 개의 Primary Partition으로 구성하였다.
 
 ```text
-Disk /dev/sdc: 10 GiB, 10737418240 bytes, 20971520 sectors
+/dev/sdd1 → 50GB
+/dev/sdd2 → 나머지 약 50GB
+```
+
+확인:
+
+```text
+Disk /dev/sdd: 100 GiB, 107374182400 bytes, 209715200 sectors
 Disk model: VMware Virtual S
 Units: sectors of 1 * 512 = 512 bytes
 Sector size (logical/physical): 512 bytes / 512 bytes
 I/O size (minimum/optimal): 512 bytes / 512 bytes
 Disklabel type: dos
-Disk identifier: 0x88a23c89
+Disk identifier: 0x748cca9b
 
-Device     Boot    Start      End  Sectors Size Id Type
-/dev/sdc1           2048 10487807 10485760   5G 83 Linux
-/dev/sdc2       10487808 20971519 10483712   5G 83 Linux
-```
-
-구성:
-
-```text
-/dev/sdc1 → 5G
-/dev/sdc2 → 5G
+Device     Boot     Start       End   Sectors Size Id Type
+/dev/sdd1            2048 104859647 104857600  50G 83 Linux
+/dev/sdd2       104859648 209715199 104855552  50G 83 Linux
 ```
 
 ---
 
-## 4. ext4 파일시스템 생성
+### 3. ext4 파일시스템 생성
 
-두 파티션에 ext4 파일시스템을 생성하였다.
+두 파티션 모두 ext4 파일시스템으로 구성하였다.
 
 ```bash
-mkfs.ext4 /dev/sdc1
-mkfs.ext4 /dev/sdc2
+[root@Server-A ~]# mkfs.ext4 /dev/sdd1
+[root@Server-A ~]# mkfs.ext4 /dev/sdd2
 ```
 
 확인:
 
 ```bash
-lsblk -f
-```
-
-결과:
-
-```text
-sdc
-├─sdc1
-│    ext4   1.0   7841e388-79a2-4ff2-b0aa-71dbcc1daf0c
-└─sdc2
-     ext4   1.0   e2f8d872-50c7-4286-9eda-dcc986108291
+[root@Server-A ~]# lsblk -f /dev/sdd
+NAME   FSTYPE FSVER LABEL UUID                                 FSAVAIL FSUSE% MOUNTPOINTS
+sdd
+├─sdd1 ext4   1.0         a476bbf1-836a-4c8a-acb0-7c2f6542b066
+└─sdd2 ext4   1.0         29dc3825-6c18-4806-8daf-7464a58a7d44
 ```
 
 ---
 
-## 5. 마운트
+### 4. `/githome`, `/winhome` 마운트
 
-마운트 디렉터리를 생성하였다.
+마운트 포인트를 생성하였다.
 
 ```bash
-mkdir -p /githome
-mkdir -p /winhome
+[root@Server-A ~]# mkdir /githome
+[root@Server-A ~]# mkdir /winhome
 ```
 
-마운트:
+각 파티션을 마운트하였다.
 
 ```bash
-mount /dev/sdc1 /githome
-mount /dev/sdc2 /winhome
+[root@Server-A ~]# mount /dev/sdd1 /githome
+[root@Server-A ~]# mount /dev/sdd2 /winhome
+```
+
+`/etc/fstab`에 UUID를 이용하여 영구 마운트를 설정하였다.
+
+```text
+UUID=a476bbf1-836a-4c8a-acb0-7c2f6542b066 /githome ext4 defaults 0 0
+UUID=29dc3825-6c18-4806-8daf-7464a58a7d44 /winhome ext4 defaults 0 0
+```
+
+설정 검증:
+
+```bash
+[root@Server-A ~]# systemctl daemon-reload
+[root@Server-A ~]# umount /githome
+[root@Server-A ~]# umount /winhome
+[root@Server-A ~]# mount -a
 ```
 
 확인:
 
 ```bash
-df -hT /githome /winhome
+[root@Server-A ~]# mount | grep -E '/githome|/winhome'
+/dev/sdd1 on /githome type ext4 (rw,relatime,seclabel)
+/dev/sdd2 on /winhome type ext4 (rw,relatime,seclabel)
 ```
 
-결과:
-
-```text
-Filesystem     Type  Size  Used Avail Use% Mounted on
-/dev/sdc1      ext4  4.9G   24K  4.6G   1% /githome
-/dev/sdc2      ext4  4.9G   24K  4.6G   1% /winhome
+```bash
+[root@Server-A ~]# lsblk -f /dev/sdd
+NAME   FSTYPE FSVER LABEL UUID                                 FSAVAIL FSUSE% MOUNTPOINTS
+sdd
+├─sdd1 ext4   1.0         a476bbf1-836a-4c8a-acb0-7c2f6542b066   46.4G     0% /githome
+└─sdd2 ext4   1.0         29dc3825-6c18-4806-8daf-7464a58a7d44   46.4G     0% /winhome
 ```
 
 ---
 
-## 6. /etc/fstab Quota 설정
+### 5. User Quota 테스트 계정 생성
 
-재부팅 후에도 자동으로 마운트되고 Quota 옵션이 적용되도록 `/etc/fstab`을 설정하였다.
-
-```text
-UUID=7841e388-79a2-4ff2-b0aa-71dbcc1daf0c  /githome  ext4  defaults,usrquota           0 2
-UUID=e2f8d872-50c7-4286-9eda-dcc986108291  /winhome  ext4  defaults,usrquota,grpquota  0 2
-```
-
-설정 반영:
+`/githome`을 홈 디렉터리로 사용하는 사용자 세 명을 생성하였다.
 
 ```bash
-systemctl daemon-reload
-
-mount -o remount /githome
-mount -o remount /winhome
+[root@Server-A ~]# useradd -md /githome/quser1 quser1
+[root@Server-A ~]# useradd -md /githome/quser2 quser2
+[root@Server-A ~]# useradd -md /githome/quser3 quser3
 ```
 
 확인:
 
 ```bash
-mount | grep -E '/githome|/winhome'
+[root@Server-A ~]# ls -l /githome
+합계 28
+drwx------. 2 root   root   16384  9월 17 11:35 lost+found
+drwx------. 3 quser1 quser1  4096  9월 17 11:48 quser1
+drwx------. 3 quser2 quser2  4096  9월 17 11:48 quser2
+drwx------. 3 quser3 quser3  4096  9월 17 11:48 quser3
 ```
 
-결과:
-
-```text
-/dev/sdc1 on /githome type ext4 (rw,relatime,seclabel,quota,usrquota)
-/dev/sdc2 on /winhome type ext4 (rw,relatime,seclabel,quota,usrquota,grpquota)
+```bash
+[root@Server-A ~]# grep quser /etc/passwd
+quser1:x:1006:1006::/githome/quser1:/bin/bash
+quser2:x:1007:1007::/githome/quser2:/bin/bash
+quser3:x:1008:1008::/githome/quser3:/bin/bash
 ```
 
 ---
 
-## 7. Quota 명령어 확인
+### 6. `/githome` User Quota 활성화
 
-Quota 패키지가 설치되어 있는지 확인하였다.
-
-```bash
-rpm -q quota
-
-which quota
-which edquota
-which repquota
-which quotaon
-```
-
-결과:
+`/etc/fstab`의 `/githome`에 `usrquota` 내용을 추가하였다.
 
 ```text
-quota-4.09-4.el9.x86_64
-/usr/bin/quota
-/usr/sbin/edquota
-/usr/sbin/repquota
-/usr/sbin/quotaon
+UUID=a476bbf1-836a-4c8a-acb0-7c2f6542b066 /githome ext4 defaults,usrquota 0 0
 ```
 
-주요 명령어:
-
-| 명령어 | 역할 |
-|---|---|
-| `quota` | 사용자 또는 그룹 Quota 상태 확인 |
-| `edquota` | 사용자 또는 그룹 제한값 설정 |
-| `repquota` | 파일시스템 전체 Quota 현황 확인 |
-| `quotaon` | Quota 활성화 상태 확인 및 활성화 |
-
----
-
-## 8. ext4 Quota Feature 활성화
-
-파일시스템의 기존 Feature를 확인하였다.
-
 ```bash
-tune2fs -l /dev/sdc1 | grep -E 'Filesystem features|User quota inode|Group quota inode'
-tune2fs -l /dev/sdc2 | grep -E 'Filesystem features|User quota inode|Group quota inode'
-```
-
-초기에는 `quota` Feature가 존재하지 않았다.
-
-파일시스템을 마운트 해제하였다.
-
-```bash
-umount /githome
-umount /winhome
-```
-
-ext4 자체 Quota Feature를 활성화하였다.
-
-```bash
-tune2fs -O quota /dev/sdc1
-tune2fs -O quota /dev/sdc2
+[root@Server-A ~]# systemctl daemon-reload
+[root@Server-A ~]# mount -o remount /dev/sdd1
 ```
 
 확인:
 
 ```bash
-tune2fs -l /dev/sdc1 | grep -E 'Filesystem features|User quota inode|Group quota inode'
-tune2fs -l /dev/sdc2 | grep -E 'Filesystem features|User quota inode|Group quota inode'
-```
-
-결과:
-
-```text
-Filesystem features:      has_journal ext_attr resize_inode dir_index filetype extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize quota metadata_csum
-User quota inode:         3
-Group quota inode:        4
-Filesystem features:      has_journal ext_attr resize_inode dir_index filetype extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize quota metadata_csum
-User quota inode:         3
-Group quota inode:        4
-```
-
-두 파일시스템 모두 ext4 Quota Feature가 활성화되었다.
-
-다시 마운트:
-
-```bash
-mount /githome
-mount /winhome
-```
-
-Quota 활성화 상태 확인:
-
-```bash
-quotaon -p /githome
-quotaon -p /winhome
-```
-
-결과:
-
-```text
-group quota on /githome (/dev/sdc1) is on
-user quota on /githome (/dev/sdc1) is on
-project quota on /githome (/dev/sdc1) is off
-
-group quota on /winhome (/dev/sdc2) is on
-user quota on /winhome (/dev/sdc2) is on
-project quota on /winhome (/dev/sdc2) is off
+[root@Server-A ~]# mount | grep sdd1
+/dev/sdd1 on /githome type ext4 (rw,relatime,seclabel,quota,usrquota)
 ```
 
 ---
 
-# 9. User Block Quota 실습
+### 7. User Quota 관리 파일 생성
 
-## 9-1. 테스트 사용자 생성
-
-`quser1`의 홈 디렉터리를 `/githome`에 생성하였다.
+`quotacheck`를 이용하여 사용자 Quota 관리 파일을 생성하였다.
 
 ```bash
-useradd -d /githome/quser1 -m quser1
-```
-
----
-
-## 9-2. 사용자 용량 제한 설정
-
-```bash
-edquota -u quser1
-```
-
-`/dev/sdc1`에 다음 제한을 설정하였다.
-
-```text
-Soft Limit = 10240 KB
-Hard Limit = 15360 KB
-```
-
-즉:
-
-```text
-Soft Limit ≈ 10 MiB
-Hard Limit ≈ 15 MiB
+[root@Server-A ~]# quotacheck -cu /githome
 ```
 
 확인:
 
 ```bash
-quota -u quser1
+[root@Server-A ~]# ls -l /githome
+합계 36
+-rw-------. 1 root   root    7168  9월 17 11:51 aquota.user
+drwx------. 2 root   root   16384  9월 17 11:35 lost+found
+drwx------. 3 quser1 quser1  4096  9월 17 11:48 quser1
+drwx------. 3 quser2 quser2  4096  9월 17 11:48 quser2
+drwx------. 3 quser3 quser3  4096  9월 17 11:48 quser3
 ```
 
-결과:
+`aquota.user`가 생성된 것을 확인하였다.
+
+---
+
+### 8. `quser1` Block Quota 설정
+
+`quser1`의 디스크 용량을 다음과 같이 제한하였다.
 
 ```text
-Disk quotas for user quser1 (uid 1004):
+Block Soft Limit → 10MB
+Block Hard Limit → 15MB
+Inode Limit      → 제한 없음
+```
+
+```bash
+[root@Server-A ~]# quotaoff /githome
+[root@Server-A ~]# edquota quser1
+```
+
+설정값:
+
+```text
+Filesystem     blocks   soft    hard   inodes   soft   hard
+/dev/sdd1          28   10240   15360       7      0      0
+```
+
+Quota 활성화 후 확인:
+
+```bash
+[root@Server-A ~]# quotaon /githome
+
+[root@Server-A ~]# quota -u quser1
+Disk quotas for user quser1 (uid 1006):
      Filesystem  blocks   quota   limit   grace   files   quota   limit   grace
-      /dev/sdc1      28   10240   15360               7       0       0
+      /dev/sdd1      28   10240   15360               7       0       0
 ```
-
-여기서:
-
-```text
-quota = Soft Limit
-limit = Hard Limit
-```
-
-이다.
 
 ---
 
-## 9-3. User Hard Limit 테스트
+### 9. `quser1` Soft / Hard Limit 테스트
 
-먼저 `quser1` 권한으로 파일을 생성하였다.
-
-```bash
-runuser -u quser1 -- dd if=/dev/zero of=/githome/quser1/file1 bs=1M count=8
-runuser -u quser1 -- dd if=/dev/zero of=/githome/quser1/file2 bs=1M count=5
-```
-
-이후 추가로 5MiB 파일 생성을 시도하였다.
+`quser1`으로 전환한 뒤 `/etc`의 파일들을 복사하여 디스크 사용량을 증가시켰다.
 
 ```bash
-runuser -u quser1 -- dd if=/dev/zero of=/githome/quser1/file3 bs=1M count=5
+[quser1@Server-A ~]$ cp -r /etc/* ./
 ```
 
-결과:
+Soft Limit을 초과하자 경고 메세지가 출력되었다.
 
 ```text
-sdc1: write failed, user block limit reached.
-dd: '/githome/quser1/file3'에 쓰는 도중 오류 발생: 디스크 할당량이 초과됨
-2+0 records in
-1+0 records out
-2068480 bytes (2.1 MB, 2.0 MiB) copied, 0.00153153 s, 1.4 GB/s
+sdd1: warning, user block quota exceeded.
 ```
 
-Hard Limit으로 인해 요청한 5MiB 전체가 기록되지 않고 약 2MiB까지만 기록되었다.
+Hard Limit에 도달하자 추가 쓰기가 차단되었다.
+
+```text
+sdd1: write failed, user block limit reached.
+cp: './ssh/moduli'에 쓰는 도중 오류 발생: 디스크 할당량이 초과됨
+```
 
 Quota 상태 확인:
 
 ```bash
-quota -u quser1
+[root@Server-A ~]# repquota /githome
+*** Report for user quotas on device /dev/sdd1
+Block grace time: 7days; Inode grace time: 7days
+                        Block limits                File limits
+User            used    soft    hard  grace    used  soft  hard  grace
+----------------------------------------------------------------------
+root      --      20       0       0              2     0     0
+quser1    +-   15360   10240   15360  6days    1898     0     0
+quser2    --      28       0       0              7     0     0
+quser3    --      28       0       0              7     0     0
 ```
 
-결과:
-
-```text
-Disk quotas for user quser1 (uid 1004):
-     Filesystem  blocks   quota   limit   grace   files   quota   limit   grace
-      /dev/sdc1   15360*  10240   15360   7days      10       0       0
-```
-
-파일 확인:
-
-```bash
-ls -lh /githome/quser1/
-```
-
-결과:
-
-```text
-합계 15M
--rw-r--r--. 1 quser1 quser1 8.0M  9월 13 15:38 file1
--rw-r--r--. 1 quser1 quser1 5.0M  9월 13 15:38 file2
--rw-r--r--. 1 quser1 quser1 2.0M  9월 13 15:39 file3
-```
-
-최종적으로 약 15MiB에서 추가 쓰기가 차단되었다.
-
-```text
-Soft Limit = 10 MiB
-Hard Limit = 15 MiB
-
-사용량 15 MiB
-→ Hard Limit 도달
-→ 추가 쓰기 차단
-```
-
-`*` 표시는 Soft Limit을 초과한 상태이며 `7days`는 Grace Period를 의미한다.
+`quser1`의 상태가 `+-`로 표시되었으며 Block Soft Limit을 초과하여 Grace Period가 적용된 것을 확인하였다.
 
 ---
 
-# 10. Group Block Quota 실습
+### 10. 사용자별 Quota 조건 설정
 
-## 10-1. 그룹 및 사용자 생성
-
-그룹 생성:
+`quser2`에는 파일 개수 제한만 설정하였다.
 
 ```bash
-groupadd winteam
+[root@Server-A ~]# edquota quser2
 ```
-
-세 사용자의 주 그룹을 `winteam`으로 지정하였다.
-
-```bash
-useradd -d /winhome/guser1 -m -g winteam guser1
-useradd -d /winhome/guser2 -m -g winteam guser2
-useradd -d /winhome/guser3 -m -g winteam guser3
-```
-
-확인:
-
-```bash
-getent group winteam
-
-id guser1
-id guser2
-id guser3
-```
-
-결과:
 
 ```text
-winteam:x:1006:
-
-uid=1005(guser1) gid=1006(winteam) groups=1006(winteam)
-uid=1006(guser2) gid=1006(winteam) groups=1006(winteam)
-uid=1007(guser3) gid=1006(winteam) groups=1006(winteam)
+Block Limit → 제한 없음
+Inode Soft  → 10000
+Inode Hard  → 15000
 ```
 
-홈 디렉터리:
+`quser3`에는 디스크 용량과 파일 개수 제한을 모두 설정하였다.
+
+```bash
+[root@Server-A ~]# edquota quser3
+```
 
 ```text
-drwx------. 3 guser1 winteam 4096  9월 13 15:42 /winhome/guser1
-drwx------. 3 guser2 winteam 4096  9월 13 15:42 /winhome/guser2
-drwx------. 3 guser3 winteam 4096  9월 13 15:42 /winhome/guser3
+Block Soft  → 61440KB = 60MB
+Block Hard  → 92160KB = 90MB
+Inode Soft  → 10000
+Inode Hard  → 15000
+```
+
+전체 상태 확인:
+
+```bash
+[root@Server-A ~]# repquota /githome
+*** Report for user quotas on device /dev/sdd1
+Block grace time: 7days; Inode grace time: 7days
+                        Block limits                File limits
+User            used    soft    hard  grace    used  soft  hard  grace
+----------------------------------------------------------------------
+root      --      20       0       0              2     0     0
+quser1    +-   15360   10240   15360  6days    1898     0     0
+quser2    --      28       0       0              7 10000 15000
+quser3    --      28   61440   92160              7 10000 15000
 ```
 
 ---
 
-## 10-2. Group Quota 설정
+### 11. `quser2` Inode Quota 테스트
+
+`quser2`에 설정한 Inode Soft 10000 / Hard 15000의 실제 동작을 확인하였다.
 
 ```bash
-edquota -g winteam
+[root@Server-A ~]# su - quser2
 ```
 
-`/dev/sdc2`에 다음 값을 설정하였다.
-
-```text
-Soft Limit = 20480 KB
-Hard Limit = 40960 KB
-```
-
-즉:
-
-```text
-Soft Limit ≈ 20 MiB
-Hard Limit ≈ 40 MiB
-```
-
-확인:
+반복문을 이용하여 빈 파일을 생성하였다.
 
 ```bash
-quota -g winteam
+[quser2@Server-A ~]$ i=1
+while [ $i -le 16000 ]
+do
+    touch inode_$i || {
+        echo "생성 실패: inode_$i"
+        break
+    }
+    i=$((i+1))
+done
 ```
 
 결과:
 
 ```text
-Disk quotas for group winteam (gid 1006):
-     Filesystem  blocks   quota   limit   grace   files   quota   limit   grace
-      /dev/sdc2      84   20480   40960              21       0       0
-```
-
----
-
-## 10-3. Group Hard Limit 테스트
-
-`guser1`이 15MiB를 생성하였다.
-
-```bash
-runuser -u guser1 -- dd if=/dev/zero of=/winhome/guser1/file1 bs=1M count=15
-```
-
-`guser2`도 15MiB를 생성하였다.
-
-```bash
-runuser -u guser2 -- dd if=/dev/zero of=/winhome/guser2/file2 bs=1M count=15
-```
-
-이후 `guser3`이 추가로 15MiB를 생성하도록 시도하였다.
-
-```bash
-runuser -u guser3 -- dd if=/dev/zero of=/winhome/guser3/file3 bs=1M count=15
-```
-
-결과:
-
-```text
-sdc2: write failed, group block limit reached.
-dd: '/winhome/guser3/file3'에 쓰는 도중 오류 발생: 디스크 할당량이 초과됨
-10+0 records in
-9+0 records out
-10399744 bytes (10 MB, 9.9 MiB) copied, 0.005537 s, 1.9 GB/s
-```
-
-그룹 Hard Limit으로 인해 `guser3`의 파일은 약 10MiB까지만 생성되었다.
-
-확인:
-
-```bash
-quota -g winteam
-```
-
-결과:
-
-```text
-Disk quotas for group winteam (gid 1006):
-     Filesystem  blocks   quota   limit   grace   files   quota   limit   grace
-      /dev/sdc2   40960*  20480   40960   7days      24       0       0
-```
-
-파일 확인:
-
-```bash
-du -sh /winhome/guser1 /winhome/guser2 /winhome/guser3
-
-ls -lh /winhome/guser1/ /winhome/guser2/ /winhome/guser3/
-```
-
-결과:
-
-```text
-16M     /winhome/guser1
-16M     /winhome/guser2
-10M     /winhome/guser3
-```
-
-```text
-/winhome/guser1/:
-합계 15M
--rw-r--r--. 1 guser1 winteam 15M  9월 13 15:43 file1
-
-/winhome/guser2/:
-합계 15M
--rw-r--r--. 1 guser2 winteam 15M  9월 13 15:43 file2
-
-/winhome/guser3/:
-합계 10M
--rw-r--r--. 1 guser3 winteam 10M  9월 13 15:44 file3
-```
-
-그룹 전체 사용량이 Hard Limit인 약 40MiB에 도달하면서 추가 기록이 차단되었다.
-
-```text
-guser1 15 MiB
-       +
-guser2 15 MiB
-       +
-guser3 약 10 MiB
-       ↓
-winteam 약 40 MiB
-       ↓
-Group Hard Limit 도달
-       ↓
-추가 쓰기 차단
-```
-
----
-
-# 11. User Inode Quota 실습
-
-Block Quota는 디스크 용량을 제한하고, Inode Quota는 생성 가능한 파일 및 디렉터리 개수를 제한한다.
-
-## 11-1. 사용자 생성
-
-```bash
-useradd -d /githome/quser2 -m quser2
-```
-
----
-
-## 11-2. Inode Limit 설정
-
-```bash
-edquota -u quser2
-```
-
-`/dev/sdc1`에 다음 값을 설정하였다.
-
-```text
-Block Soft = 0
-Block Hard = 0
-
-Inode Soft = 20
-Inode Hard = 30
-```
-
-확인:
-
-```bash
-quota -u quser2
-```
-
-결과:
-
-```text
-Disk quotas for user quser2 (uid 1008):
-     Filesystem  blocks   quota   limit   grace   files   quota   limit   grace
-      /dev/sdc1      28       0       0               7      20      30
-```
-
-홈 디렉터리에 기본 파일이 존재하므로 이미 inode 7개를 사용하고 있었다.
-
----
-
-## 11-3. Inode Hard Limit 테스트
-
-30개의 파일 생성을 시도하였다.
-
-```bash
-runuser -u quser2 -- bash -c 'for i in {1..30}; do touch /githome/quser2/test$i || break; done'
-```
-
-결과:
-
-```text
-sdc1: warning, user file quota exceeded.
-sdc1: write failed, user file limit reached.
-touch: cannot touch '/githome/quser2/test24': 디스크 할당량이 초과됨
+sdd1: warning, user file quota exceeded.
+sdd1: write failed, user file limit reached.
+touch: cannot touch 'inode_14993': 디스크 할당량이 초과됨
+생성 실패: inode_14993
 ```
 
 Quota 확인:
 
 ```bash
-quota -u quser2
-```
-
-결과:
-
-```text
-Disk quotas for user quser2 (uid 1008):
+[quser2@Server-A ~]$ quota -u quser2
+Disk quotas for user quser2 (uid 1007):
      Filesystem  blocks   quota   limit   grace   files   quota   limit   grace
-      /dev/sdc1      28       0       0              30*     20      30   7days
+      /dev/sdd1     492       0       0           15000*  10000   15000   7days
 ```
 
-생성된 테스트 파일 수 확인:
+직접 생성된 테스트 파일 개수:
 
 ```bash
-ls -l /githome/quser2/test* 2>/dev/null | wc -l
+[quser2@Server-A ~]$ find . -maxdepth 1 -name 'inode_*' | wc -l
+14992
 ```
 
-결과:
-
-```text
-23
-```
-
-기존 inode 7개와 새로 생성된 파일 23개를 합하면:
-
-```text
-기존 inode = 7
-테스트 파일 = 23
-────────────────
-총 inode = 30
-```
-
-Hard Limit인 30개에 도달하여 `test24` 생성부터 차단되었다.
+기존에 `quser2`가 소유하고 있던 홈 디렉터리와 기본 파일들의 inode까지 포함하여 총 inode 사용량이 15000에 도달하자 추가 파일 생성이 차단되는 것을 확인하였다.
 
 ---
 
-# 12. Soft Limit / Hard Limit / Grace Period
+### 12. `/winhome` User / Group Quota 활성화
 
-## Soft Limit
-
-Soft Limit은 경고 기준이다.
-
-Soft Limit을 초과해도 일정 시간 동안 추가 사용이 가능하다.
+`/etc/fstab`의 `/winhome`에 User Quota와 Group Quota 내용을 추가하였다.
 
 ```text
-Soft Limit 초과
-        ↓
-Grace Period 시작
-        ↓
-일정 기간 동안 사용 가능
+UUID=29dc3825-6c18-4806-8daf-7464a58a7d44 /winhome ext4 defaults,usrquota,grpquota 0 0
 ```
 
-이번 실습에서는 Grace Period가 다음과 같이 확인되었다.
+설정 반영:
 
-```text
-7days
+```bash
+[root@Server-A ~]# systemctl daemon-reload
+[root@Server-A ~]# mount -o remount /winhome
 ```
 
----
+확인:
 
-## Hard Limit
-
-Hard Limit은 절대 상한선이다.
-
-Hard Limit에 도달하면 Grace Period와 관계없이 추가 사용이 제한된다.
-
-실제 실습 결과:
-
-```text
-user block limit reached
-group block limit reached
-user file limit reached
-디스크 할당량이 초과됨
+```bash
+[root@Server-A ~]# mount | grep /winhome
+/dev/sdd2 on /winhome type ext4 (rw,relatime,seclabel,quota,usrquota,grpquota)
 ```
 
-을 확인하였다.
+User / Group Quota 관리 파일 생성:
 
----
-
-# 13. Block Quota와 Inode Quota
-
-| 구분 | 제한 대상 |
-|---|---|
-| Block Quota | 사용 가능한 디스크 용량 |
-| Inode Quota | 생성 가능한 파일 및 디렉터리 개수 |
-
-예:
-
-```text
-Block Quota
-
-사용자 최대 15 MiB
-→ 파일 크기 합계가 제한에 도달하면 쓰기 차단
+```bash
+[root@Server-A ~]# quotacheck -cu /winhome
+[root@Server-A ~]# quotacheck -cg /winhome
 ```
 
-```text
-Inode Quota
+확인:
 
-사용자 최대 30개
-→ 파일/디렉터리 개수가 제한에 도달하면 생성 차단
+```bash
+[root@Server-A ~]# ls -l /winhome
+합계 32
+-rw-------. 1 root root  6144  9월 17 12:04 aquota.group
+-rw-------. 1 root root  6144  9월 17 12:04 aquota.user
+drwx------. 2 root root 16384  9월 17 11:35 lost+found
 ```
 
 ---
 
-# 14. User Quota와 Group Quota
+### 13. Group Quota 테스트 사용자 및 그룹 생성
 
-## User Quota
+`/winhome`을 홈 디렉터리로 사용하는 사용자 세 명을 생성하였다.
 
-특정 사용자 한 명의 사용량을 제한한다.
-
-```text
-quser1
-└── Hard Limit 15 MiB
+```bash
+[root@Server-A ~]# useradd -md /winhome/guser1 guser1
+[root@Server-A ~]# useradd -md /winhome/guser2 guser2
+[root@Server-A ~]# useradd -md /winhome/guser3 guser3
 ```
 
-이번 실습에서는 `quser1`이 약 15MiB에 도달하자 추가 쓰기가 차단되었다.
+확인:
+
+```text
+guser1:x:1009:1009::/winhome/guser1:/bin/bash
+guser2:x:1010:1010::/winhome/guser2:/bin/bash
+guser3:x:1011:1011::/winhome/guser3:/bin/bash
+```
+
+`winteam` 그룹을 생성하고 세 사용자를 보조 그룹으로 추가하였다.
+
+```bash
+[root@Server-A ~]# groupadd winteam
+
+[root@Server-A ~]# usermod -aG winteam guser1
+[root@Server-A ~]# usermod -aG winteam guser2
+[root@Server-A ~]# usermod -aG winteam guser3
+```
+
+확인:
+
+```bash
+[root@Server-A ~]# id guser1
+uid=1009(guser1) gid=1009(guser1) groups=1009(guser1),1012(winteam)
+
+[root@Server-A ~]# id guser2
+uid=1010(guser2) gid=1010(guser2) groups=1010(guser2),1012(winteam)
+
+[root@Server-A ~]# id guser3
+uid=1011(guser3) gid=1011(guser3) groups=1011(guser3),1012(winteam)
+```
 
 ---
 
-## Group Quota
+### 14. `winteam` Group Quota 설정
 
-특정 그룹에 속한 파일들의 사용량을 그룹 단위로 제한한다.
+사용자 홈 디렉터리의 그룹 소유권을 `winteam`으로 변경하였다.
 
-```text
-winteam
-├── guser1
-├── guser2
-└── guser3
+```bash
+[root@Server-A ~]# chgrp -R winteam /winhome/guser1
+[root@Server-A ~]# chgrp -R winteam /winhome/guser2
+[root@Server-A ~]# chgrp -R winteam /winhome/guser3
 ```
 
-세 사용자의 사용량을 합산하여 약 40MiB에 도달하자 추가 쓰기가 차단되었다.
+확인:
+
+```bash
+[root@Server-A ~]# ls -l /winhome
+합계 44
+-rw-------. 1 root   root     7168  9월 17 12:10 aquota.group
+-rw-------. 1 root   root     6144  9월 17 12:04 aquota.user
+drwx------. 3 guser1 winteam  4096  9월 17 12:08 guser1
+drwx------. 3 guser2 winteam  4096  9월 17 12:08 guser2
+drwx------. 3 guser3 winteam  4096  9월 17 12:08 guser3
+drwx------. 2 root   root    16384  9월 17 11:35 lost+found
+```
+
+그룹 소유권 변경 내용을 Group Quota 관리 정보에 반영하기 위해 Group Quota 정보를 다시 검사하였다.
+
+```bash
+[root@Server-A ~]# quotacheck -cg /winhome
+```
+
+`winteam`에 Group Quota를 설정하였다.
+
+```bash
+[root@Server-A ~]# edquota -g winteam
+```
+
+```text
+Soft Limit → 20480KB = 20MB
+Hard Limit → 40690KB ≈ 40MB
+Inode      → 제한 없음
+```
+
+설정 후 User / Group Quota를 활성화하였다.
+
+```bash
+[root@Server-A ~]# quotaon -ug /winhome
+```
+
+Group Quota 활성화 상태를 확인하였다.
+
+```bash
+[root@Server-A ~]# quotaon -p /winhome
+group quota on /winhome (/dev/sdd2) is on
+user quota on /winhome (/dev/sdd2) is on
+project quota on /winhome (/dev/sdd2) is off
+```
 
 ---
 
-# 15. 주요 명령어
+### 15. `/winhome` SetGID 설정
 
-| 명령어 | 설명 |
-|---|---|
-| `quota -u USER` | 사용자 Quota 확인 |
-| `quota -g GROUP` | 그룹 Quota 확인 |
-| `edquota -u USER` | 사용자 Quota 설정 |
-| `edquota -g GROUP` | 그룹 Quota 설정 |
-| `repquota` | 파일시스템 Quota 현황 확인 |
-| `quotaon` | Quota 활성화 |
-| `quotaon -p` | Quota 활성화 상태 확인 |
-| `tune2fs -O quota` | ext4 Quota Feature 활성화 |
-| `findmnt` | 파일시스템 마운트 상태 및 옵션 확인 |
-| `df -hT` | 파일시스템 용량 및 타입 확인 |
+`/winhome`에서 생성되는 파일과 디렉터리가 `winteam` 그룹을 상속하도록 SetGID를 설정하였다.
+
+```bash
+[root@Server-A ~]# chmod 2777 /winhome
+[root@Server-A ~]# chown :winteam /winhome
+```
+
+확인:
+
+```bash
+[root@Server-A ~]# ls -ld /winhome
+drwxrwsrwx. 6 root winteam 4096  9월 17 12:12 /winhome
+```
+
+`guser1`이 `/winhome`에 파일을 생성하였다.
+
+```bash
+[guser1@Server-A ~]$ dd if=/dev/zero of=/winhome/bigfile.img bs=1M count=10
+10+0 records in
+10+0 records out
+10485760 bytes (10 MB, 10 MiB) copied, 0.00698471 s, 1.5 GB/s
+```
+
+파일 그룹 확인:
+
+```bash
+[guser1@Server-A ~]$ ls -lh /winhome/bigfile.img
+-rw-r--r--. 1 guser1 winteam 10M  9월 17 12:14 /winhome/bigfile.img
+```
+
+생성된 파일의 그룹이 자동으로 `winteam`이 된 것을 확인하였다.
+
+SetGID 동작 확인 후 Group Quota 용량 테스트를 위해 테스트 파일을 정리하였다.
+
+```bash
+[root@Server-A ~]# rm -f /winhome/bigfile.img
 
 ---
 
-# 16. 실습 결과
+### 16. Group Soft / Hard Limit 테스트
 
-이번 실습을 통해 다음 내용을 확인하였다.
+`guser1`이 `/winhome`에 10MB 파일을 연속으로 생성하였다.
 
-```text
-1. ext4 파일시스템에 Quota 기능 활성화
-
-2. User Block Quota
-   quser1
-   Soft 10 MiB
-   Hard 15 MiB
-   → Hard Limit에서 실제 쓰기 차단 확인
-
-3. Group Block Quota
-   winteam
-   Soft 20 MiB
-   Hard 40 MiB
-   → 여러 사용자의 그룹 사용량 합계가
-     Hard Limit에 도달하자 쓰기 차단 확인
-
-4. User Inode Quota
-   quser2
-   Soft 20개
-   Hard 30개
-   → inode 30개 도달 후 새로운 파일 생성 차단 확인
-
-5. Soft Limit 초과 시 Grace Period 적용 확인
-
-6. Hard Limit 도달 시
-   Disk quota exceeded 동작 확인
+```bash
+[guser1@Server-A ~]$ dd if=/dev/zero of=/winhome/bigfile.img bs=1M count=10
+10+0 records in
+10+0 records out
+10485760 bytes (10 MB, 10 MiB) copied, 0.00545904 s, 1.9 GB/s
 ```
 
-Disk Quota를 이용하면 다중 사용자 환경에서 특정 사용자 또는 그룹이 디스크 공간이나 inode를 과도하게 사용하는 것을 제한할 수 있다.
+두 번째 파일을 생성하면서 Group Soft Limit을 초과하였다.
+
+```text
+sdd2: warning, group block quota exceeded.
+```
+
+세 번째 파일까지는 Grace Period에 의해 생성할 수 있었다.
+
+```text
+10+0 records in
+10+0 records out
+10485760 bytes (10 MB, 10 MiB) copied, 0.00757879 s, 1.4 GB/s
+```
+
+네 번째 파일 생성 중 Group Hard Limit에 도달하였다.
+
+```text
+sdd2: write failed, group block limit reached.
+dd: '/winhome/bigfile4.img'에 쓰는 도중 오류 발생: 디스크 할당량이 초과됨
+10+0 records in
+9+0 records out
+10117120 bytes (10 MB, 9.6 MiB) copied, 0.0206872 s, 489 MB/s
+```
+
+최종 Group Quota 상태:
+
+```bash
+[root@Server-A ~]# repquota -g /winhome
+*** Report for group quotas on device /dev/sdd2
+Block grace time: 7days; Inode grace time: 7days
+                        Block limits                File limits
+Group           used    soft    hard  grace    used  soft  hard  grace
+----------------------------------------------------------------------
+root      --      16       0       0              1     0     0
+guser1    --       8       0       0              2     0     0
+winteam   +-   40688   20480   40690  6days      26     0     0
+```
+
+파일 확인:
+
+```bash
+[root@Server-A ~]# ls -lh /winhome
+합계 40M
+-rw-------. 1 root   root    7.0K  9월 17 12:12 aquota.group
+-rw-------. 1 root   root    7.0K  9월 17 12:04 aquota.user
+-rw-r--r--. 1 guser1 winteam  10M  9월 17 12:26 bigfile.img
+-rw-r--r--. 1 guser1 winteam  10M  9월 17 12:26 bigfile2.img
+-rw-r--r--. 1 guser1 winteam  10M  9월 17 12:26 bigfile3.img
+-rw-r--r--. 1 guser1 winteam 9.7M  9월 17 12:26 bigfile4.img
+```
+
+Group Hard Limit에 도달하면서 마지막 파일이 정상 크기인 10MB를 모두 기록하지 못한 것을 확인하였다.
+
+---
+
+### 17. 여러 사용자의 Group Quota 사용량 합산 확인
+
+기존 Group Quota 테스트 파일을 정리하였다.
+
+```bash
+[root@Server-A ~]# rm -f /winhome/bigfile*.img
+```
+
+여러 사용자가 같은 `winteam` 그룹 공간을 사용하도록 하였다.
+
+`guser1`이 10MB 파일을 생성하였다.
+
+```bash
+[guser1@Server-A ~]$ dd if=/dev/zero of=/winhome/guser1.img bs=1M count=10
+```
+
+`guser2`가 15MB 파일을 생성하였다.
+
+```bash
+[guser2@Server-A ~]$ dd if=/dev/zero of=/winhome/guser2.img bs=1M count=15
+```
+
+동기화 후 Group Quota를 확인하였다.
+
+```bash
+[root@Server-A ~]# quota -g winteam
+Disk quotas for group winteam (gid 1012):
+     Filesystem  blocks   quota   limit   grace   files   quota   limit   grace
+      /dev/sdd2   25688*  20480   40690   7days      24       0       0
+```
+
+최종 상태:
+
+```bash
+[root@Server-A ~]# repquota -g /winhome
+*** Report for group quotas on device /dev/sdd2
+Block grace time: 7days; Inode grace time: 7days
+                        Block limits                File limits
+Group           used    soft    hard  grace    used  soft  hard  grace
+----------------------------------------------------------------------
+root      --      16       0       0              1     0     0
+guser1    --       8       0       0              2     0     0
+guser2    --       8       0       0              2     0     0
+winteam   +-   25688   20480   40690  6days      24     0     0
+```
+
+`guser1`과 `guser2`가 각각 파일을 생성했지만 두 사용자의 디스크 사용량이 `winteam`의 하나의 Group Quota로 합산되는 것을 확인하였다.
+
+약 25MB가 사용되어 Group Soft Limit인 20MB를 초과하였고 Grace Period가 시작되었다.
+
+---
+
+
+## 실습 결과
+
+- 100GB 디스크를 50GB 파티션 2개로 구성
+- 두 파티션을 ext4 파일시스템으로 생성
+- `/githome`, `/winhome` 영구 마운트 구성
+- `/githome`에 User Quota 적용
+- `quser1`에 Block Soft 10MB / Hard 15MB 설정
+- User Soft Limit 초과 시 Grace Period 적용 확인
+- User Hard Limit 도달 시 추가 쓰기 차단 확인
+- `quser2`에 Inode Soft 10000 / Hard 15000 설정
+- Inode Hard Limit 도달 시 추가 파일 생성 차단 확인
+- `quser3`에 Block Quota와 Inode Quota 동시 설정
+- `/winhome`에 User Quota와 Group Quota 적용
+- `winteam` 그룹에 Soft 20MB / Hard 약 40MB 설정
+- `/winhome`에 SetGID를 적용하여 생성 파일의 그룹을 `winteam`으로 상속
+- Group Soft Limit 초과 시 Grace Period 적용 확인
+- Group Hard Limit 도달 시 추가 쓰기 차단 확인
+- `guser1`, `guser2`가 사용한 디스크 공간이 `winteam` Group Quota에 합산되는 것을 확인
+- `quota`, `repquota`, `edquota`, `quotacheck`, `quotaon`, `quotaoff` 명령을 이용한 Disk Quota 관리 방법 확인
+
