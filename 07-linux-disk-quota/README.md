@@ -557,7 +557,7 @@ SetGID 동작 확인 후 Group Quota 용량 테스트를 위해 테스트 파일
 
 ```bash
 [root@Server-A ~]# rm -f /winhome/bigfile.img
-
+```
 ---
 
 ### 16. Group Soft / Hard Limit 테스트
