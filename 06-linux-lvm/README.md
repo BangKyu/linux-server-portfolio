@@ -1,589 +1,346 @@
-# Linux LVM 실습
+# Linux LVM 구성 및 용량 확장 실습
 
-Rocky Linux 환경에서 LVM(Logical Volume Manager)을 구성하고  
-PV → VG → LV 생성, 파일시스템 생성 및 마운트, 자동 마운트 설정,  
-추가 디스크를 이용한 VG/LV/파일시스템 확장을 실습하였다.
+## 실습 개요
 
----
+Rocky Linux에서 LVM(Logical Volume Manager)을 이용하여 디스크를 논리적으로 관리하는 방법을 실습하였다.
 
-## 1. 실습 환경
+빈 디스크를 PV(Physical Volume)로 생성하고 VG(Volume Group), LV(Logical Volume)를 구성한 후 ext4 파일시스템을 생성하여 마운트하였다.
 
-기존 시스템 디스크와 스토리지 실습용 디스크는 유지한 상태에서  
-LVM 실습용 10GB 디스크 2개를 추가하였다.
-
-```bash
-lsblk
-```
-
-확인한 LVM 실습용 디스크:
-
-```text
-sdc    10G
-sdd    10G
-```
-
-기존 `/dev/sda`, `/dev/sdb`는 다른 용도로 사용 중이므로  
-LVM 실습에서는 사용하지 않았다.
+`lvextend`, `resize2fs`, `lvextend -r`을 이용하여 LV와 파일시스템의 용량을 확장하고 `/etc/fstab`을 이용한 영구 마운트를 실습하였다.
 
 ---
 
-## 2. LVM 파티션 생성
+## 실습 과정
 
-`/dev/sdc`, `/dev/sdd`에 각각 전체 용량을 사용하는 파티션을 생성하였다.
+### 1. 디스크 및 기존 LVM 상태 확인
 
-```bash
-fdisk /dev/sdc
-fdisk /dev/sdd
-```
-
-DOS/MBR 파티션 테이블을 사용하였으며  
-파티션 타입은 `Linux LVM(8e)`으로 설정하였다.
-
-확인:
+현재 디스크 상태 확인
 
 ```bash
-fdisk -l /dev/sdc
-fdisk -l /dev/sdd
+[root@Server-A ~]# lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS
+NAME    SIZE TYPE FSTYPE  MOUNTPOINTS
+sda     100G disk
+├─sda1    4G part swap    [SWAP]
+└─sda2   96G part xfs     /
+sdb     100G disk
+├─sdb1   30G part xfs     /GIT
+├─sdb2    1K part
+├─sdb5   20G part ext4    /homeSK
+├─sdb6   20G part ext4    /homeLG/user1
+├─sdb7   20G part ext4    /homeLG/user2
+└─sdb8   10G part ext4    /homeLG/user3
+sdc     100G disk
+sdd     100G disk
+sde     100G disk
+sr0    14.2G rom  iso9660
 ```
 
-실제 결과:
+`/dev/sdc`가 파티션, 파일시스템, 마운트가 없는 100G 빈 디스크인 것을 확인하고 LVM 실습용으로 사용하였다.
 
-```text
-Disk /dev/sdc: 10 GiB, 10737418240 bytes, 20971520 sectors
-Disklabel type: dos
+기존 LVM 구성 확인
 
-Device     Boot Start      End  Sectors Size Id Type
-/dev/sdc1        2048 20971519 20969472  10G 8e Linux LVM
+```bash
+[root@Server-A ~]# pvs
+[root@Server-A ~]# vgs
+[root@Server-A ~]# lvs
 ```
 
-```text
-Disk /dev/sdd: 10 GiB, 10737418240 bytes, 20971520 sectors
-Disklabel type: dos
-
-Device     Boot Start      End  Sectors Size Id Type
-/dev/sdd1        2048 20971519 20969472  10G 8e Linux LVM
-```
+기존 PV, VG, LV가 없는 상태에서 실습을 시작하였다.
 
 ---
 
-## 3. PV(Physical Volume) 생성
+### 2. PV 생성
 
-LVM에서 사용할 수 있도록 두 파티션을 PV로 초기화하였다.
-
-```bash
-pvcreate /dev/sdc1 /dev/sdd1
-```
-
-실행 결과:
-
-```text
-Physical volume "/dev/sdc1" successfully created.
-Physical volume "/dev/sdd1" successfully created.
-Creating devices file /etc/lvm/devices/system.devices
-```
-
-PV 확인:
+`/dev/sdc`를 LVM에서 사용할 수 있도록 PV로 생성하였다.
 
 ```bash
-pvs
+[root@Server-A ~]# pvcreate /dev/sdc
+  Physical volume "/dev/sdc" successfully created.
+  Creating devices file /etc/lvm/devices/system.devices
 ```
 
-```text
-PV         VG Fmt  Attr PSize   PFree
-/dev/sdc1     lvm2 ---  <10.00g <10.00g
-/dev/sdd1     lvm2 ---  <10.00g <10.00g
+PV 상태 확인
+
+```bash
+[root@Server-A ~]# pvs
+  PV         VG Fmt  Attr PSize   PFree
+  /dev/sdc      lvm2 ---  100.00g 100.00g
 ```
 
-PV를 생성했지만 아직 VG에 포함되지 않았기 때문에  
-두 PV의 전체 공간이 사용 가능한 상태이다.
+`/dev/sdc` 전체 100G가 PV로 생성되었으며 아직 VG에 할당되지 않아 전체 공간이 사용 가능한 상태임을 확인하였다.
 
 ---
 
-## 4. VG(Volume Group) 생성
+### 3. VG 생성
 
-두 PV를 하나의 Volume Group으로 묶었다.
-
-VG 이름은 `SOLLVM`으로 설정하였다.
+PV 상태인 `/dev/sdc`를 이용하여 `vg01` Volume Group을 생성하였다.
 
 ```bash
-vgcreate SOLLVM /dev/sdc1 /dev/sdd1
+[root@Server-A ~]# vgcreate vg01 /dev/sdc
+  Volume group "vg01" successfully created
 ```
 
-실행 결과:
-
-```text
-Volume group "SOLLVM" successfully created
-```
-
-확인:
+VG 상태 확인
 
 ```bash
-vgs
-pvs
+[root@Server-A ~]# vgs
+  VG   #PV #LV #SN Attr   VSize    VFree
+  vg01   1   0   0 wz--n- <100.00g <100.00g
 ```
 
-```text
-VG     #PV #LV #SN Attr   VSize  VFree
-SOLLVM   2   0   0 wz--n- 19.99g 19.99g
-```
-
-```text
-PV         VG     Fmt  Attr PSize   PFree
-/dev/sdc1  SOLLVM lvm2 a--  <10.00g <10.00g
-/dev/sdd1  SOLLVM lvm2 a--  <10.00g <10.00g
-```
-
-약 10GB의 PV 2개를 묶어  
-약 20GB 크기의 `SOLLVM` VG를 구성하였다.
+`vg01`이 하나의 PV로 구성되었으며 약 100G의 공간을 사용할 수 있는 것을 확인하였다.
 
 ---
 
-## 5. LV(Logical Volume) 생성
+### 4. LV 생성
 
-`SOLLVM`에서 3개의 LV를 생성하였다.
-
-```bash
-lvcreate -L 8G -n 8G_LV1 SOLLVM
-lvcreate -L 6G -n 6G_LV2 SOLLVM
-lvcreate -l 100%FREE -n 6G_LV3 SOLLVM
-```
-
-확인:
+`vg01`에서 30G 크기의 `lv01` Logical Volume을 생성하였다.
 
 ```bash
-lvs
-vgs
+[root@Server-A ~]# lvcreate -L 30G -n lv01 vg01
+  Logical volume "lv01" created.
 ```
 
-실제 결과:
+`-L 30G`를 사용하여 LV 크기를 30G로 설정하였다.
 
-```text
-LV     VG     Attr       LSize
-6G_LV2 SOLLVM -wi-a----- 6.00g
-6G_LV3 SOLLVM -wi-a----- 5.99g
-8G_LV1 SOLLVM -wi-a----- 8.00g
-```
+`-n lv01`을 사용하여 Logical Volume의 이름을 `lv01`로 설정하였다.
 
-```text
-VG     #PV #LV #SN Attr   VSize  VFree
-SOLLVM   2   3   0 wz--n- 19.99g    0
-```
-
-구성 결과:
-
-```text
-SOLLVM 약 20GB
-├── 8G_LV1 : 8GB
-├── 6G_LV2 : 6GB
-└── 6G_LV3 : 약 6GB
-```
-
-VG의 모든 여유 공간을 LV에 할당하여 `VFree`가 0이 되었다.
-
----
-
-## 6. ext4 파일시스템 생성
-
-생성한 LV에 ext4 파일시스템을 생성하였다.
+LV 상태 확인
 
 ```bash
-mkfs.ext4 /dev/SOLLVM/8G_LV1
-mkfs.ext4 /dev/SOLLVM/6G_LV2
-mkfs.ext4 /dev/SOLLVM/6G_LV3
+[root@Server-A ~]# lvs
+  LV   VG   Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv01 vg01 -wi-a----- 30.00g
+```
+
+`vg01` 내부에 30G 크기의 `lv01`이 생성된 것을 확인하였다.
+
+LVM 구성 구조:
+
+```text
+/dev/sdc
+   ↓
+PV
+   ↓
+vg01
+   ↓
+lv01 30G
 ```
 
 ---
 
-## 7. 마운트 디렉터리 생성 및 마운트
+### 5. ext4 파일시스템 생성 및 마운트
 
-마운트할 디렉터리를 생성하였다.
-
-```bash
-mkdir -p /CU
-mkdir -p /GS
-mkdir -p /LG
-```
-
-각 LV를 마운트하였다.
+`lv01`에 ext4 파일시스템을 생성하였다.
 
 ```bash
-mount /dev/SOLLVM/8G_LV1 /CU
-mount /dev/SOLLVM/6G_LV2 /GS
-mount /dev/SOLLVM/6G_LV3 /LG
+[root@Server-A ~]# mkfs.ext4 /dev/vg01/lv01
 ```
 
-마운트 결과:
+마운트 디렉터리를 생성하고 LV를 마운트하였다.
+
+```bash
+[root@Server-A ~]# mkdir -p /lvm
+[root@Server-A ~]# mount /dev/vg01/lv01 /lvm
+```
+
+마운트 상태 확인
+
+```bash
+[root@Server-A ~]# df -hT /lvm
+Filesystem            Type  Size  Used Avail Use% Mounted on
+/dev/mapper/vg01-lv01 ext4   30G   24K   28G   1% /lvm
+```
+
+LVM 구조 확인
+
+```bash
+[root@Server-A ~]# lsblk /dev/sdc
+NAME        MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS
+sdc           8:32   0  100G  0 disk
+└─vg01-lv01 253:0    0   30G  0 lvm  /lvm
+```
+
+`/dev/vg01/lv01`이 ext4 파일시스템으로 생성되어 `/lvm`에 정상적으로 마운트된 것을 확인하였다.
+
+---
+
+### 6. LV 용량 확장
+
+기존 30G LV에 20G를 추가하여 50G로 확장하였다.
+
+```bash
+[root@Server-A ~]# lvextend -L +20G /dev/vg01/lv01
+```
+
+LV와 파일시스템의 크기를 각각 확인하였다.
+
+```bash
+[root@Server-A ~]# lvs
+  LV   VG   Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv01 vg01 -wi-ao---- 50.00g
+
+[root@Server-A ~]# df -hT /lvm
+Filesystem            Type  Size  Used Avail Use% Mounted on
+/dev/mapper/vg01-lv01 ext4   30G   24K   28G   1% /lvm
+```
+
+LV는 50G로 확장되었지만 ext4 파일시스템은 기존 30G 크기를 유지하고 있는 것을 확인하였다.
 
 ```text
-8G_LV1 → /CU
-6G_LV2 → /GS
-6G_LV3 → /LG
-```
-
-확인:
-
-```bash
-df -hT /CU /GS /LG
-```
-
-```text
-Filesystem                Type  Size  Used Avail Use% Mounted on
-/dev/mapper/SOLLVM-8G_LV1 ext4  7.8G   24K  7.4G   1% /CU
-/dev/mapper/SOLLVM-6G_LV2 ext4  5.9G   24K  5.6G   1% /GS
-/dev/mapper/SOLLVM-6G_LV3 ext4  5.9G   24K  5.5G   1% /LG
+LV 크기 확장 ≠ 파일시스템 크기 확장
 ```
 
 ---
 
-## 8. `/etc/fstab` 자동 마운트 설정
+### 7. ext4 파일시스템 확장
 
-재부팅 후에도 LV가 자동으로 마운트되도록 UUID를 사용하여  
-`/etc/fstab`에 등록하였다.
-
-먼저 기존 설정을 백업하였다.
+확장된 LV 크기에 맞춰 ext4 파일시스템을 확장하였다.
 
 ```bash
-cp -p /etc/fstab /etc/fstab.lvm.bak
+[root@Server-A ~]# resize2fs /dev/vg01/lv01
 ```
 
-LV UUID 확인:
+확인
 
 ```bash
-lsblk -f
+[root@Server-A ~]# df -hT /lvm
+Filesystem            Type  Size  Used Avail Use% Mounted on
+/dev/mapper/vg01-lv01 ext4   50G   24K   47G   1% /lvm
+
+[root@Server-A ~]# lvs
+  LV   VG   Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv01 vg01 -wi-ao---- 50.00g
 ```
 
-확인한 UUID:
+`resize2fs`를 사용하여 ext4 파일시스템도 약 50G로 확장된 것을 확인하였다.
+
+---
+
+### 8. LV와 파일시스템 동시 확장
+
+`lvextend -r` 옵션을 이용하여 LV와 파일시스템을 동시에 확장하였다.
+
+기존 50G에서 10G를 추가하여 60G로 확장
+
+```bash
+[root@Server-A ~]# lvextend -r -L +10G /dev/vg01/lv01
+```
+
+확인
+
+```bash
+[root@Server-A ~]# lvs
+  LV   VG   Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv01 vg01 -wi-ao---- 60.00g
+
+[root@Server-A ~]# df -hT /lvm
+Filesystem            Type  Size  Used Avail Use% Mounted on
+/dev/mapper/vg01-lv01 ext4   59G   24K   57G   1% /lvm
+
+[root@Server-A ~]# vgs
+  VG   #PV #LV #SN Attr   VSize    VFree
+  vg01   1   1   0 wz--n- <100.00g <40.00g
+```
+
+`lv01`은 60G로 확장되었으며 파일시스템도 함께 확장된 것을 확인하였다.
+
+`vg01`에는 약 40G의 여유 공간이 남아 있는 것을 확인하였다.
 
 ```text
-8G_LV1
-dd84dfea-90d4-4562-be52-528800201931
+lvextend -L +20G
+→ LV만 확장
 
-6G_LV2
-2fe5a703-5893-482e-a3ba-4c644cf8bcb4
+resize2fs
+→ ext4 파일시스템 확장
 
-6G_LV3
-19b567c0-cffa-4774-ba2a-5525344e0e5e
+lvextend -r -L +10G
+→ LV와 파일시스템을 동시에 확장
+```
+
+---
+
+### 9. /etc/fstab 영구 마운트 설정
+
+LV의 UUID를 확인하여 `/etc/fstab`에 등록하였다.
+
+```bash
+[root@Server-A ~]# blkid /dev/vg01/lv01
+/dev/vg01/lv01: UUID="5f17682f-8d29-455e-b0dc-13ba2b99ef91" TYPE="ext4"
 ```
 
 `/etc/fstab`에 다음 내용을 추가하였다.
 
 ```text
-UUID=dd84dfea-90d4-4562-be52-528800201931  /CU  ext4  defaults  0 2
-UUID=2fe5a703-5893-482e-a3ba-4c644cf8bcb4  /GS  ext4  defaults  0 2
-UUID=19b567c0-cffa-4774-ba2a-5525344e0e5e  /LG  ext4  defaults  0 2
+UUID=5f17682f-8d29-455e-b0dc-13ba2b99ef91 /lvm ext4 defaults 0 0
 ```
 
-설정 반영 및 오류 확인:
+변경된 설정을 반영하고 현재 마운트를 해제하고 다시 마운트하였다.
 
 ```bash
-systemctl daemon-reload
-mount -a
+[root@Server-A ~]# systemctl daemon-reload
+[root@Server-A ~]# umount /lvm
+[root@Server-A ~]# mount -a
 ```
 
-마운트 상태 확인:
+최종 확인
 
 ```bash
-findmnt /CU
-findmnt /GS
-findmnt /LG
+[root@Server-A ~]# df -hT /lvm
+Filesystem            Type  Size  Used Avail Use% Mounted on
+/dev/mapper/vg01-lv01 ext4   59G   24K   57G   1% /lvm
 ```
 
-실제 결과:
-
-```text
-TARGET SOURCE                    FSTYPE OPTIONS
-/CU    /dev/mapper/SOLLVM-8G_LV1 ext4   rw,relatime,seclabel
-```
-
-```text
-TARGET SOURCE                    FSTYPE OPTIONS
-/GS    /dev/mapper/SOLLVM-6G_LV2 ext4   rw,relatime,seclabel
-```
-
-```text
-TARGET SOURCE                    FSTYPE OPTIONS
-/LG    /dev/mapper/SOLLVM-6G_LV3 ext4   rw,relatime,seclabel
-```
+`umount` 후 `mount -a`를 실행했을 때 `/lvm`이 다시 정상적으로 마운트되어 영구 마운트 설정이 정상적으로 적용된 것을 확인하였다.
 
 ---
 
-## 9. 재부팅 후 자동 마운트 확인
+## 트러블슈팅
 
-시스템을 재부팅하였다.
+### LV 생성 시 용량 단위 누락
 
-```bash
-reboot
-```
-
-재부팅 후 별도의 `mount` 또는 `mount -a` 명령을 실행하지 않고 확인하였다.
+처음 LV를 생성할 때 용량 단위를 지정하지 않았다.
 
 ```bash
-findmnt /CU
-findmnt /GS
-findmnt /LG
+[root@Server-A ~]# lvcreate -L 30 -n lv01 vg01
+  Rounding up size to full physical extent 32.00 MiB
+  Logical volume "lv01" created.
+
+[root@Server-A ~]# lvs
+  LV   VG   Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv01 vg01 -wi-a----- 32.00m
 ```
 
-실제 결과:
+원하는 크기는 30G였지만 실제로는 32MiB 크기의 LV가 생성되었다.
 
-```text
-TARGET SOURCE                    FSTYPE OPTIONS
-/CU    /dev/mapper/SOLLVM-8G_LV1 ext4   rw,relatime,seclabel
+잘못 생성된 LV를 제거한 후 용량 단위 `G`를 명시하여 다시 생성하였다.
+
+```bash
+[root@Server-A ~]# lvremove /dev/vg01/lv01
+[root@Server-A ~]# lvcreate -L 30G -n lv01 vg01
+  Logical volume "lv01" created.
 ```
 
-```text
-TARGET SOURCE                    FSTYPE OPTIONS
-/GS    /dev/mapper/SOLLVM-6G_LV2 ext4   rw,relatime,seclabel
+```bash
+[root@Server-A ~]# lvs
+  LV   VG   Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lv01 vg01 -wi-a----- 30.00g
 ```
 
-```text
-TARGET SOURCE                    FSTYPE OPTIONS
-/LG    /dev/mapper/SOLLVM-6G_LV3 ext4   rw,relatime,seclabel
-```
-
-재부팅 이후에도 자동으로 마운트되는 것을 확인하였다.
+LVM에서 용량을 지정할 때 `30G`, `500M`과 같이 단위를 명확하게 지정해야 함을 확인하였다.
 
 ---
 
-## 10. LVM 확장을 위한 새 디스크 추가
-
-기존 VG의 여유 공간이 없기 때문에  
-VMware에서 새로운 10GB 디스크를 추가하였다.
-
-```bash
-lsblk
-```
-
-새 디스크 확인:
-
-```text
-sde    10G
-```
-
-새 디스크에 LVM용 파티션 `/dev/sde1`을 생성하였다.
-
-```bash
-fdisk /dev/sde
-```
-
-DOS/MBR 환경에서 파티션 타입을 `Linux LVM(8e)`으로 설정하였다.
-
----
-
-## 11. 새로운 PV 생성 및 VG 확장
-
-새로운 파티션을 PV로 생성하였다.
-
-```bash
-pvcreate /dev/sde1
-```
-
-기존 `SOLLVM` VG에 `/dev/sde1`을 추가하였다.
-
-```bash
-vgextend SOLLVM /dev/sde1
-```
-
-확인:
-
-```bash
-pvs
-vgs
-```
-
-실제 결과:
-
-```text
-PV         VG     Fmt  Attr PSize   PFree
-/dev/sdc1  SOLLVM lvm2 a--  <10.00g      0
-/dev/sdd1  SOLLVM lvm2 a--  <10.00g      0
-/dev/sde1  SOLLVM lvm2 a--  <10.00g <10.00g
-```
-
-```text
-VG     #PV #LV #SN Attr   VSize   VFree
-SOLLVM   3   3   0 wz--n- <29.99g <10.00g
-```
-
-VG가 약 20GB에서 약 30GB로 확장되었으며  
-약 10GB의 새로운 여유 공간이 확보되었다.
-
----
-
-## 12. 기존 LV 용량 확장
-
-기존 `8G_LV1`을 1GB 확장하였다.
-
-```bash
-lvextend -L +1G /dev/SOLLVM/8G_LV1
-```
-
-LV 확인:
-
-```bash
-lvs
-```
-
-확장 결과:
-
-```text
-LV     VG     Attr       LSize
-6G_LV2 SOLLVM -wi-ao---- 6.00g
-6G_LV3 SOLLVM -wi-ao---- 5.99g
-8G_LV1 SOLLVM -wi-ao---- 9.00g
-```
-
-LV 이름은 `8G_LV1`이지만 실제 크기는 9GB로 증가하였다.
-
-LV 이름은 단순한 식별 이름이므로  
-LV의 실제 크기가 변경되어도 자동으로 변경되지 않는다.
-
----
-
-## 13. ext4 파일시스템 확장
-
-`lvextend`는 LV의 공간을 확장하지만  
-파일시스템의 크기까지 자동으로 확장한 것은 아니므로  
-ext4 파일시스템도 확장하였다.
-
-```bash
-resize2fs /dev/SOLLVM/8G_LV1
-```
-
-확장 후 확인:
-
-```bash
-df -hT /CU
-```
-
-실제 결과:
-
-```text
-Filesystem                Type  Size  Used Avail Use% Mounted on
-/dev/mapper/SOLLVM-8G_LV1 ext4  8.8G   24K  8.4G   1% /CU
-```
-
-`/CU`에서 사용하는 ext4 파일시스템까지 정상적으로 확장된 것을 확인하였다.
-
----
-
-## 14. 최종 LVM 상태 확인
-
-```bash
-pvs
-vgs
-lvs
-```
-
-최종 결과:
-
-```text
-PV         VG     Fmt  Attr PSize   PFree
-/dev/sdc1  SOLLVM lvm2 a--  <10.00g     0
-/dev/sdd1  SOLLVM lvm2 a--  <10.00g     0
-/dev/sde1  SOLLVM lvm2 a--  <10.00g <9.00g
-```
-
-```text
-VG     #PV #LV #SN Attr   VSize   VFree
-SOLLVM   3   3   0 wz--n- <29.99g <9.00g
-```
-
-```text
-LV     VG     Attr       LSize
-6G_LV2 SOLLVM -wi-ao---- 6.00g
-6G_LV3 SOLLVM -wi-ao---- 5.99g
-8G_LV1 SOLLVM -wi-ao---- 9.00g
-```
-
-새로운 10GB PV를 VG에 추가한 뒤  
-그중 약 1GB를 기존 LV 확장에 사용하여 약 9GB가 남아 있다.
-
----
-
-## 15. 최종 파일시스템 및 마운트 상태
-
-```bash
-df -hT /CU /GS /LG
-```
-
-실제 결과:
-
-```text
-Filesystem                Type  Size  Used Avail Use% Mounted on
-/dev/mapper/SOLLVM-8G_LV1 ext4  8.8G   24K  8.4G   1% /CU
-/dev/mapper/SOLLVM-6G_LV2 ext4  5.9G   24K  5.6G   1% /GS
-/dev/mapper/SOLLVM-6G_LV3 ext4  5.9G   24K  5.5G   1% /LG
-```
-
----
-
-## 16. 최종 구조
-
-```text
-/dev/sdc1 약 10GB ─┐
-                   │
-/dev/sdd1 약 10GB ─┼── SOLLVM 약 30GB
-                   │
-/dev/sde1 약 10GB ─┘
-                        │
-                        ├── 8G_LV1 → 9GB    → ext4 → /CU
-                        ├── 6G_LV2 → 6GB    → ext4 → /GS
-                        └── 6G_LV3 → 5.99GB → ext4 → /LG
-
-SOLLVM 남은 공간: 약 9GB
-```
-
----
-
-## 17. 실습을 통해 확인한 내용
-
-- 디스크 파티션을 LVM PV로 구성
-- 여러 PV를 하나의 VG로 통합
-- VG 공간을 이용하여 여러 LV 생성
-- LV에 ext4 파일시스템 생성
-- LV를 일반 디스크 파티션처럼 디렉터리에 마운트
-- UUID를 이용한 `/etc/fstab` 자동 마운트 구성
-- 재부팅 후 자동 마운트 동작 확인
-- 새로운 디스크를 PV로 추가
-- `vgextend`를 이용한 기존 VG 용량 확장
-- `lvextend`를 이용한 기존 LV 용량 확장
-- `resize2fs`를 이용한 ext4 파일시스템 확장
-- 하나의 LV가 여러 PV의 공간을 사용할 수 있음을 확인
-
----
-
-## 18. 핵심 명령어
-
-| 명령어 | 용도 |
-|---|---|
-| `pvcreate` | PV 생성 |
-| `pvs` | PV 상태 요약 확인 |
-| `pvdisplay` | PV 상세 정보 확인 |
-| `vgcreate` | VG 생성 |
-| `vgextend` | 기존 VG에 PV 추가 |
-| `vgs` | VG 상태 요약 확인 |
-| `lvcreate` | LV 생성 |
-| `lvextend` | LV 용량 확장 |
-| `lvs` | LV 상태 요약 확인 |
-| `mkfs.ext4` | ext4 파일시스템 생성 |
-| `resize2fs` | ext4 파일시스템 크기 조정 |
-| `lsblk -f` | 디스크/LVM/파일시스템 구조 확인 |
-| `findmnt` | 마운트 상태 확인 |
-| `df -hT` | 파일시스템 용량과 타입 확인 |
-| `mount -a` | `/etc/fstab` 설정 테스트 |
-
----
-
-## 정리
-
-일반 파티션만 사용하는 방식과 달리 LVM은  
-여러 물리 저장장치의 공간을 하나의 VG로 묶고 필요한 크기의 LV를 생성하여 사용할 수 있다.
-
-이번 실습에서는 처음 약 20GB의 VG를 생성한 후  
-추가 10GB 디스크를 기존 VG에 편입하여 약 30GB로 확장하였다.
-
-또한 기존 `8G_LV1`을 삭제하거나 새로 생성하지 않고  
-8GB에서 9GB로 확장한 뒤 ext4 파일시스템까지 확장하였다.
-
-이를 통해 LVM의 PV → VG → LV 구조와  
-스토리지 용량 확장 과정을 실제 환경에서 확인하였다.
+## 실습 결과
+
+- 빈 디스크 `/dev/sdc`를 LVM용 PV로 구성
+- `vg01` Volume Group 생성
+- `vg01`에서 `lv01` Logical Volume 30G 생성
+- `lv01`에 ext4 파일시스템 생성 및 `/lvm` 마운트
+- `pvs`, `vgs`, `lvs`를 이용하여 PV, VG, LV 상태 확인
+- `lvextend`를 이용하여 LV를 30G에서 50G로 확장
+- LV 확장만으로는 ext4 파일시스템 크기가 자동으로 증가하지 않는 것을 확인
+- `resize2fs`를 이용하여 ext4 파일시스템을 50G로 확장
+- `lvextend -r`을 이용하여 LV와 파일시스템을 60G까지 동시에 확장
+- VG의 남은 여유 공간 약 40G 확인
+- UUID와 `/etc/fstab`을 이용하여 `/lvm` 영구 마운트 설정
