@@ -1,4 +1,43 @@
-374182400 bytes, 209715200 sectors
+# Linux 디스크 파티션 및 마운트 관리 실습
+
+## 실습 개요
+
+Rocky Linux에서 추가 디스크를 확인하고 `fdisk`를 이용하여 MBR 방식의 파티션을 생성하였다.
+
+Primary, Extended, Logical Partition의 구조를 확인하고 각 파티션에 XFS와 ext4 파일시스템을 생성하여 원하는 디렉터리에 마운트하였다.
+
+또한 UUID를 이용하여 `/etc/fstab`에 등록하고 `mount -a`를 통해 영구 마운트 설정을 검증하였다.
+
+---
+
+## 실습 과정
+
+### 1. 디스크 상태 확인
+
+현재 시스템의 디스크와 파일시스템 확인
+
+```bash
+[root@Server-A ~]# lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS
+NAME    SIZE TYPE FSTYPE  MOUNTPOINTS
+sda     100G disk
+├─sda1    4G part swap    [SWAP]
+└─sda2   96G part xfs     /
+sdb     100G disk
+sdc     100G disk
+sdd     100G disk
+sde     100G disk
+sr0    14.2G rom  iso9660
+```
+
+`/dev/sda`는 운영체제가 설치된 디스크이므로 실습 대상에서 제외하고 빈 디스크인 `/dev/sdb`를 사용하였다.
+
+---
+
+### 2. /dev/sdb 상태 확인
+
+```bash
+[root@Server-A ~]# fdisk -l /dev/sdb
+Disk /dev/sdb: 100 GiB, 107374182400 bytes, 209715200 sectors
 Disk model: VMware Virtual S
 Units: sectors of 1 * 512 = 512 bytes
 Sector size (logical/physical): 512 bytes / 512 bytes
@@ -73,7 +112,7 @@ Filesystem     Type  Size  Used Avail Use% Mounted on
 
 ---
 
-### 5. UUID를 이용한 /GIT 영구 마운트
+### 5. UUID 기반 /etc/fstab 영구 마운트 설정
 
 `/dev/sdb1`의 UUID 확인
 
@@ -236,7 +275,7 @@ Filesystem     Type  Size  Used Avail Use% Mounted on
 
 ---
 
-### 10. UUID 기반 영구 마운트 설정
+### UUID 기반 /etc/fstab 영구 마운트 설정
 
 Logical Partition의 UUID 확인
 
@@ -253,7 +292,7 @@ sdb
 
 ```
 
-`/etc/fstab`에 등록
+`/etc/fstab`에 다음 내용을 추가하였다.
 
 ```text
 UUID=7f7a0751-cbbf-427a-8439-661d6f13e55e /homeLG/user1 ext4 defaults 0 0
@@ -310,7 +349,7 @@ sdb
 - Primary Partition `/dev/sdb1` 30G 생성
 - Extended Partition `/dev/sdb2` 70G 생성
 - Logical Partition `/dev/sdb5~8` 생성
-- XFS와 ext4 파일시스템 생성 및 차이 확인
+- XFS와 ext4 파일시스템 생성 및 마운트 확인
 - `mount`, `umount`를 이용한 파일시스템 마운트 및 해제
 - `/GIT`, `/homeSK`, `/homeLG/user1~3` 마운트 구성
 - `lsblk`, `df`, `fdisk`를 이용한 디스크 및 마운트 상태 확인
