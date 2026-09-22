@@ -2,11 +2,9 @@
 
 ## 실습 개요
 
-Rocky Linux 9 환경에서 DHCP Server를 구성하고 Linux 및 Windows Client에게 IP 주소와 네트워크 정보를 자동으로 할당하는 실습을 진행하였다.
+Linux 환경에서 DHCP Server를 구성하고 Linux 및 Windows Client에게 IP 주소를 자동으로 할당하는 방법을 실습하였다.
 
-VMware에서 기본으로 제공하는 DHCP Server를 중지한 후 Server-A를 DHCP Server로 구성하였으며, Client-L과 Windows Client가 Server-A로부터 IP 주소, Subnet Mask, Default Gateway, DNS Server 정보를 자동으로 할당받도록 설정하였다.
-
-또한 DHCP 동작 과정인 `DORA(Discover → Offer → Request → ACK)`를 서버 로그에서 확인하고 `/var/lib/dhcpd/dhcpd.leases` 파일을 이용하여 실제 IP 임대 정보를 확인하였다.
+DHCP 동작 과정인 DORA를 서버 로그에서 확인하고 `/var/lib/dhcpd/dhcpd.leases` 파일을 이용하여 실제 IP 임대 정보를 확인하는 방법을 실습하였다.
 
 ---
 
