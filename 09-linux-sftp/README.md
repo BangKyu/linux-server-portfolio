@@ -1,452 +1,756 @@
-# SFTP Server
+# Linux SFTP 서버 구성 및 보안 설정 실습
 
-Rocky Linux의 OpenSSH를 이용하여 SFTP 서버를 구성하고, Windows 클라이언트에서 파일 업로드/다운로드를 테스트했습니다.
+## 실습 개요
 
-추가로 특정 사용자를 SFTP 전용 계정으로 제한하고 `ChrootDirectory`를 적용하여 지정된 경로 밖으로 접근하지 못하도록 구성했습니다.
+Rocky Linux에서 OpenSSH의 SFTP 기능을 이용하여 파일 업로드 및 다운로드를 실습하였다.
 
----
+SFTP 전용 사용자를 생성한 후 `ForceCommand internal-sftp`를 이용하여 일반 SSH Shell 접속을 제한하고, `ChrootDirectory`를 설정하여 사용자가 지정된 디렉터리 밖으로 접근하지 못하도록 구성하였다.
 
-## 1. 실습 환경
-
-| 구분 | 내용 |
-|---|---|
-| Server | Rocky Linux |
-| Server IP | `192.168.111.100` |
-| Client | Windows |
-| Protocol | SFTP |
-| Service | OpenSSH |
-| Port | TCP 22 |
-| SFTP User | `sftpuser` |
-
-OpenSSH 설치 및 SSH 서비스 상태를 확인했습니다.
-
-```bash
-rpm -q openssh-server
-rpm -q openssh-clients
-systemctl status sshd --no-pager
-ss -lntp | grep ':22'
-```
-
-확인 결과 SSH 서버가 정상 실행 중이며 TCP 22번 포트에서 대기하고 있었습니다.
-
-```text
-LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=1181,fd=7))
-LISTEN 0 128 [::]:22    [::]:*    users:(("sshd",pid=1181,fd=8))
-```
-
-SFTP Subsystem 설정도 확인했습니다.
-
-```bash
-grep -R "^[[:space:]]*Subsystem[[:space:]]\+sftp" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null
-```
-
-```text
-/etc/ssh/sshd_config:Subsystem  sftp    /usr/libexec/openssh/sftp-server
-```
-
-방화벽에서도 SSH 서비스가 허용된 상태였습니다.
-
-```bash
-firewall-cmd --list-services
-```
-
-```text
-cockpit dhcpv6-client ssh
-```
+또한 SFTP 접속 및 인증 로그를 확인하고 설정 파일의 백업과 복구 과정을 실습하였다.
 
 ---
 
-## 2. SFTP 사용자 확인
+## 실습 과정
 
-SFTP 테스트용 사용자 `sftpuser`를 사용했습니다.
+### 1. OpenSSH Server 설치 및 서비스 상태 확인
+
+OpenSSH Server 패키지가 설치되어 있는지 확인하였다.
 
 ```bash
-id sftpuser
-getent passwd sftpuser
-ls -ld /home/sftpuser
+[root@Server-A ~]# rpm -qa | grep openssh-server
+openssh-server-9.9p1-7.el9_8.rocky.0.1.x86_64
 ```
 
-```text
-uid=1009(sftpuser) gid=1009(sftpuser) groups=1009(sftpuser)
+`sshd` 서비스 상태 확인
 
-sftpuser:x:1009:1009::/home/sftpuser:/bin/bash
-
-drwx------. 3 sftpuser sftpuser 78  9월 14 09:45 /home/sftpuser
+```bash
+[root@Server-A ~]# systemctl status sshd
+● sshd.service - OpenSSH server daemon
+     Loaded: loaded (/usr/lib/systemd/system/sshd.service; enabled; preset: enabled)
+     Active: active (running)
 ```
 
-서버에 다운로드 테스트용 파일을 준비했습니다.
-
-```text
-/home/sftpuser/server-test.txt
-```
-
-```text
-Rocky Linux SFTP Server Test
-```
+OpenSSH Server가 설치되어 있으며 `sshd` 서비스가 정상적으로 실행 중인 것을 확인하였다.
 
 ---
 
-## 3. Windows에서 SFTP 접속
+### 2. SFTP 사용자 생성
 
-Windows에서 Rocky Linux 서버로 접속했습니다.
+SFTP 실습에 사용할 `sftpuser` 사용자 생성
 
-```powershell
-sftp sftpuser@192.168.111.100
+```bash
+[root@Server-A ~]# useradd sftpuser
 ```
 
-최초 접속 시 서버의 SSH Host Key를 확인한 후 접속에 성공했습니다.
+비밀번호 설정
 
-```text
-Connected to 192.168.111.100.
-sftp>
+```bash
+[root@Server-A ~]# passwd sftpuser
+sftpuser 사용자의 비밀 번호 변경 중
+새 암호:
+새 암호 재입력:
+passwd: 모든 인증 토큰이 성공적으로 업데이트 되었습니다.
 ```
 
-Remote와 Local의 현재 경로를 각각 확인했습니다.
+사용자 정보 확인
 
-```text
+```bash
+[root@Server-A ~]# id sftpuser
+uid=1012(sftpuser) gid=1013(sftpuser) groups=1013(sftpuser)
+```
+
+홈 디렉터리 확인
+
+```bash
+[root@Server-A ~]# ls -ld /home/sftpuser
+drwx------. 3 sftpuser sftpuser 78  9월 22 09:35 /home/sftpuser
+```
+
+`sftpuser` 계정과 `/home/sftpuser` 홈 디렉터리가 정상적으로 생성된 것을 확인하였다.
+
+---
+
+### 3. SFTP 접속 테스트
+
+localhost를 이용하여 `sftpuser` 계정으로 SFTP 접속
+
+```bash
+[root@Server-A ~]# sftp sftpuser@localhost
+The authenticity of host 'localhost (::1)' can't be established.
+ED25519 key fingerprint is SHA256:KmymTWFVG9z+5T7PkQP52JDcLq41JiLLUH97dU90v7E.
+Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+Warning: Permanently added 'localhost' (ED25519) to the list of known hosts.
+sftpuser@localhost's password:
+Connected to localhost.
+```
+
+Remote 작업 디렉터리 확인
+
+```bash
 sftp> pwd
 Remote working directory: /home/sftpuser
-
-sftp> lpwd
-Local working directory: c:\users\이병규
 ```
 
-- `pwd` : Remote 서버 현재 경로 확인
-- `lpwd` : Local Windows 현재 경로 확인
-- `cd` : Remote 경로 이동
-- `lcd` : Local 경로 이동
-
----
-
-## 4. 파일 다운로드
-
-서버의 `server-test.txt` 파일을 Windows로 다운로드했습니다.
-
-```text
-sftp> get server-test.txt
-```
-
-Windows에서 다운로드된 파일을 확인했습니다.
-
-```text
-sftp> lls server-test.txt
- Directory of C:\Users\이병규
-
-2026-09-14  오전 09:50                29 server-test.txt
-```
-
-Local 경로를 `Downloads`로 변경한 뒤 다시 다운로드하여 저장 위치가 변경되는 것도 확인했습니다.
-
-```text
-sftp> lcd Downloads
-
-sftp> lpwd
-Local working directory: c:\users\이병규\downloads
-
-sftp> get server-test.txt
-Fetching /home/sftpuser/server-test.txt to server-test.txt
-server-test.txt 100% 29 9.4KB/s 00:00
-```
-
----
-
-## 5. 파일 업로드
-
-Windows의 `upload-test.txt` 파일을 서버로 업로드했습니다.
-
-```text
-sftp> put upload-test.txt
-```
-
-서버에서 실제 파일을 확인했습니다.
+파일 목록 확인
 
 ```bash
-ls -l /home/sftpuser
+sftp> ls -la
+drwx------    ? sftpuser sftpuser       78 Sep 22 09:35 .
+drwxr-xr-x    ? root     root           48 Sep 22 09:35 ..
+-rw-r--r--    ? sftpuser sftpuser       18 Apr 30  2024 .bash_logout
+-rw-r--r--    ? sftpuser sftpuser      141 Apr 30  2024 .bash_profile
+-rw-r--r--    ? sftpuser sftpuser      492 Apr 30  2024 .bashrc
 ```
 
-```text
--rw-r--r--. 1 sftpuser sftpuser 29  9월 14 09:47 server-test.txt
--rw-r--r--. 1 sftpuser sftpuser 60  9월 14 09:52 upload-test.txt
-```
-
-업로드된 파일의 소유자는 `sftpuser:sftpuser`이며 권한은 `644`로 생성되었습니다.
-
----
-
-## 6. SFTP 디렉터리 조작
-
-Remote 서버에 디렉터리를 생성하고 이동했습니다.
-
-```text
-sftp> mkdir sftp-test
-
-sftp> ls
-server-test.txt   sftp-test   upload-test.txt
-
-sftp> cd sftp-test
-
-sftp> pwd
-Remote working directory: /home/sftpuser/sftp-test
-```
-
-특정 Remote 디렉터리를 지정하여 업로드하는 것도 확인했습니다.
-
-```text
-sftp> put upload-test.txt sftp-test/
-
-sftp> ls sftp-test
-sftp-test/upload-test.txt
-```
-
----
-
-## 7. 사용자 접근 권한 확인
-
-`/home/sftpuser`의 권한은 `700`으로 설정되어 있어 다른 일반 사용자가 접근할 수 없습니다.
+SFTP 접속 종료
 
 ```bash
-runuser -u guest -- ls -l /home/sftpuser
-runuser -u guest -- cat /home/sftpuser/server-test.txt
+sftp> exit
 ```
 
-```text
-ls: cannot open directory '/home/sftpuser': 허가 거부
-
-cat: /home/sftpuser/server-test.txt: 허가 거부
-```
-
-이를 통해 Linux 파일 권한이 SFTP 사용자 데이터 접근에도 적용되는 것을 확인했습니다.
+`sftpuser` 계정으로 SFTP 접속이 정상적으로 가능한 것을 확인하였다.
 
 ---
 
-## 8. SSH 인증 로그 확인
+### 4. SFTP 파일 업로드
 
-`journalctl`을 통해 SFTP 접속에 사용된 SSH 인증 로그를 확인했습니다.
-
-```text
-Accepted password for sftpuser from 192.168.111.1 port 13035 ssh2
-
-Failed password for sftpuser from 192.168.111.1 port 4045 ssh2
-
-Accepted password for sftpuser from 192.168.111.1 port 4045 ssh2
-```
-
-정상 인증뿐만 아니라 잘못된 비밀번호 입력에 의한 인증 실패도 SSH 로그에 기록되는 것을 확인했습니다.
-
----
-
-# SFTP 전용 사용자 구성
-
-기본 설정에서는 `sftpuser`가 SFTP뿐만 아니라 일반 SSH Shell에도 로그인할 수 있었습니다.
-
-```powershell
-ssh sftpuser@192.168.111.100
-```
-
-```text
-[sftpuser@localhost ~]$ whoami
-sftpuser
-
-[sftpuser@localhost ~]$ pwd
-/home/sftpuser
-```
-
-보안을 강화하기 위해 `sftpuser`를 SFTP 전용 사용자로 제한하고 Chroot를 적용했습니다.
-
----
-
-## 9. Chroot 디렉터리 구성
-
-다음 구조로 SFTP 전용 디렉터리를 구성했습니다.
-
-```text
-/sftp/
-└── sftpuser/
-    └── upload/
-```
-
-Chroot 최상위 경로는 `root`가 소유하고, 실제 파일 업로드 디렉터리만 `sftpuser`가 소유하도록 설정했습니다.
+root 홈 디렉터리에 테스트 파일 생성
 
 ```bash
-mkdir -p /sftp/sftpuser/upload
-
-chown root:root /sftp
-chown root:root /sftp/sftpuser
-
-chmod 755 /sftp
-chmod 755 /sftp/sftpuser
-
-chown sftpuser:sftpuser /sftp/sftpuser/upload
-chmod 755 /sftp/sftpuser/upload
+[root@Server-A ~]# touch sftp-test.txt
+[root@Server-A ~]# echo "SFTP TEST" > sftp-test.txt
 ```
 
-확인 결과:
+SFTP 접속
 
-```text
-drwxr-xr-x. 3 root     root     20  9월 14 10:05 /sftp/sftpuser
-
-drwxr-xr-x. 2 sftpuser sftpuser 29  9월 14 10:11 /sftp/sftpuser/upload
+```bash
+[root@Server-A ~]# sftp sftpuser@localhost
+sftpuser@localhost's password:
+Connected to localhost.
 ```
+
+`put` 명령을 이용하여 파일 업로드
+
+```bash
+sftp> put sftp-test.txt /home/sftpuser
+Uploading sftp-test.txt to /home/sftpuser/sftp-test.txt
+sftp-test.txt                                              100%   10    19.5KB/s   00:00
+```
+
+업로드된 파일 확인
+
+```bash
+sftp> ls -l
+-rw-r--r--    ? sftpuser sftpuser       10 Sep 22 09:44 sftp-test.txt
+```
+
+접속 종료 후 실제 파일 확인
+
+```bash
+[root@Server-A ~]# ls -l /home/sftpuser
+합계 4
+-rw-r--r--. 1 sftpuser sftpuser 10  9월 22 09:44 sftp-test.txt
+```
+
+`put` 명령을 이용하여 파일을 SFTP 서버에 업로드할 수 있는 것을 확인하였다.
 
 ---
 
-## 10. sshd_config 설정
+### 5. SFTP 파일 다운로드
 
-설정 변경 전 원본 파일을 백업했습니다.
+기존 파일 이름 변경
 
 ```bash
-cp -a /etc/ssh/sshd_config /etc/ssh/sshd_config.sftp-backup
+[root@Server-A ~]# mv sftp-test.txt sftp-mv.txt
 ```
 
-`/etc/ssh/sshd_config` 마지막에 다음 설정을 추가했습니다.
+SFTP 접속 후 파일 확인
+
+```bash
+[root@Server-A ~]# sftp sftpuser@localhost
+sftpuser@localhost's password:
+Connected to localhost.
+
+sftp> ls -l
+-rw-r--r--    ? sftpuser sftpuser       10 Sep 22 09:44 sftp-test.txt
+```
+
+`get` 명령을 이용하여 파일 다운로드
+
+```bash
+sftp> get sftp-test.txt
+Fetching /home/sftpuser/sftp-test.txt to sftp-test.txt
+sftp-test.txt                                              100%   10     8.9KB/s   00:00
+```
+
+접속 종료
+
+```bash
+sftp> exit
+```
+
+파일 확인
+
+```bash
+[root@Server-A ~]# ls -l
+-rw-r--r--. 1 root root 10  9월 22 09:43 sftp-mv.txt
+-rw-r--r--. 1 root root 10  9월 22 09:47 sftp-test.txt
+```
+
+파일 내용 확인
+
+```bash
+[root@Server-A ~]# cat sftp-test.txt
+SFTP TEST
+```
+
+`get` 명령을 이용하여 SFTP 서버의 파일을 다운로드할 수 있는 것을 확인하였다.
+
+---
+
+### 6. sshd_config 백업
+
+SFTP 전용 설정을 적용하기 전 `sshd_config` 파일을 백업하였다.
+
+```bash
+[root@Server-A ~]# mkdir sshd_backup
+[root@Server-A ~]# cp -r /etc/ssh/sshd_config sshd_backup/
+```
+
+확인
+
+```bash
+[root@Server-A ~]# ls -l sshd_backup/
+합계 4
+-rw-------. 1 root root 3674  9월 22 09:52 sshd_config
+```
+
+SSH 설정을 변경하기 전에 기존 설정 파일을 백업하였다.
+
+---
+
+### 7. SFTP 전용 사용자 설정
+
+`/etc/ssh/sshd_config` 수정
+
+```bash
+[root@Server-A ~]# vi /etc/ssh/sshd_config
+```
+
+다음 내용을 추가하였다.
 
 ```text
 Match User sftpuser
-    ChrootDirectory /sftp/%u
+    ForceCommand internal-sftp
+```
+
+SSH 설정 문법 검사
+
+```bash
+[root@Server-A ~]# sshd -t
+```
+
+아무런 출력이 없으므로 설정 문법이 정상임을 확인하였다.
+
+`sshd` 서비스 재시작
+
+```bash
+[root@Server-A ~]# systemctl restart sshd
+```
+
+서비스 상태 확인
+
+```bash
+[root@Server-A ~]# systemctl status sshd
+● sshd.service - OpenSSH server daemon
+     Active: active (running)
+```
+
+---
+
+### 8. 일반 SSH Shell 접속 제한 확인
+
+`sftpuser` 계정으로 일반 SSH 접속 시도
+
+```bash
+[root@Server-A ~]# ssh sftpuser@localhost
+sftpuser@localhost's password:
+This service allows sftp connections only.
+Connection to localhost closed.
+```
+
+SFTP 접속 확인
+
+```bash
+[root@Server-A ~]# sftp sftpuser@localhost
+sftpuser@localhost's password:
+Connected to localhost.
+```
+
+`ForceCommand internal-sftp` 설정을 이용하여 일반 SSH Shell 접속은 제한하고 SFTP 접속만 허용되는 것을 확인하였다.
+
+---
+
+### 9. SFTP Chroot 디렉터리 구성
+
+SFTP 사용자가 서버의 다른 디렉터리에 접근하지 못하도록 Chroot 환경을 구성하였다.
+
+디렉터리 생성
+
+```bash
+[root@Server-A ~]# mkdir -p /sftp/sftpuser/upload
+```
+
+디렉터리 상태 확인
+
+```bash
+[root@Server-A ~]# ls -ld /sftp /sftp/sftpuser /sftp/sftpuser/upload
+drwxr-xr-x. 3 root root 22  9월 22 10:01 /sftp
+drwxr-xr-x. 3 root root 20  9월 22 10:01 /sftp/sftpuser
+drwxr-xr-x. 2 root root  6  9월 22 10:01 /sftp/sftpuser/upload
+```
+
+업로드 디렉터리 소유권 변경
+
+```bash
+[root@Server-A ~]# chown sftpuser:sftpuser /sftp/sftpuser/upload
+```
+
+확인
+
+```bash
+[root@Server-A ~]# ls -ld /sftp /sftp/sftpuser /sftp/sftpuser/upload
+drwxr-xr-x. 3 root     root     22  9월 22 10:01 /sftp
+drwxr-xr-x. 3 root     root     20  9월 22 10:01 /sftp/sftpuser
+drwxr-xr-x. 2 sftpuser sftpuser  6  9월 22 10:01 /sftp/sftpuser/upload
+```
+
+Chroot 최상위 디렉터리는 `root`가 소유하고 실제 파일 업로드가 필요한 `upload` 디렉터리만 `sftpuser`에게 권한을 부여하였다.
+
+---
+
+### 10. sshd_config Chroot 설정
+
+`/etc/ssh/sshd_config` 수정
+
+```bash
+[root@Server-A ~]# vi /etc/ssh/sshd_config
+```
+
+`sftpuser` 설정을 다음과 같이 구성하였다.
+
+```text
+Match User sftpuser
+    ChrootDirectory /sftp/sftpuser
     ForceCommand internal-sftp
     AllowTcpForwarding no
     X11Forwarding no
 ```
 
-주요 설정:
-
-| 설정 | 역할 |
-|---|---|
-| `Match User sftpuser` | `sftpuser`에게만 설정 적용 |
-| `ChrootDirectory /sftp/%u` | 사용자의 접근 범위를 지정된 경로로 제한 |
-| `ForceCommand internal-sftp` | 일반 Shell 대신 SFTP만 실행 |
-| `AllowTcpForwarding no` | SSH TCP Forwarding 차단 |
-| `X11Forwarding no` | X11 Forwarding 차단 |
-
-설정 문법을 검사했습니다.
+설정 검사
 
 ```bash
-sshd -t
+[root@Server-A ~]# sshd -t
 ```
 
-오류 출력이 없음을 확인한 후 실제 적용 값을 확인했습니다.
-
-```text
-x11forwarding no
-allowtcpforwarding no
-forcecommand internal-sftp
-chrootdirectory /sftp/%u
-```
-
-설정을 적용했습니다.
+서비스 재시작
 
 ```bash
-systemctl reload sshd
+[root@Server-A ~]# systemctl restart sshd
+```
+
+확인
+
+```bash
+[root@Server-A ~]# systemctl status sshd
+● sshd.service - OpenSSH server daemon
+     Active: active (running)
 ```
 
 ---
 
-## 11. 일반 SSH Shell 차단 확인
+### 11. Chroot 적용 확인
 
-설정 적용 후 Windows에서 일반 SSH 접속을 시도했습니다.
+SFTP 접속
 
-```powershell
-ssh sftpuser@192.168.111.100
+```bash
+[root@Server-A ~]# sftp sftpuser@localhost
+sftpuser@localhost's password:
+Connected to localhost.
 ```
 
-```text
-This service allows sftp connections only.
-Connection to 192.168.111.100 closed.
-```
+현재 디렉터리 확인
 
-`ForceCommand internal-sftp` 설정으로 인해 일반 SSH Shell 사용이 차단된 것을 확인했습니다.
-
----
-
-## 12. Chroot SFTP 접속 확인
-
-일반 SSH Shell은 차단되었지만 SFTP 접속은 정상적으로 동작했습니다.
-
-```powershell
-sftp sftpuser@192.168.111.100
-```
-
-```text
-Connected to 192.168.111.100.
-
+```bash
 sftp> pwd
 Remote working directory: /
-
-sftp> ls
-upload
 ```
 
-사용자에게 `/`로 보이는 경로는 실제 Rocky Linux 서버의 다음 경로입니다.
+파일 목록 확인
 
-```text
-SFTP 사용자에게 보이는 경로    실제 서버 경로
-
-/                         →    /sftp/sftpuser
-/upload                   →    /sftp/sftpuser/upload
+```bash
+sftp> ls -l
+drwxr-xr-x    ? 1012     1013            6 Sep 22 10:01 upload
 ```
 
-따라서 `sftpuser`는 시스템 전체 파일 시스템이 아닌 지정된 Chroot 영역 내부에서만 작업할 수 있습니다.
+`/upload`로 이동
 
----
-
-## 13. Chroot 내부 파일 업로드
-
-Chroot 내부의 `/upload` 디렉터리로 이동했습니다.
-
-```text
+```bash
 sftp> cd upload
-
 sftp> pwd
 Remote working directory: /upload
 ```
 
-Windows 파일을 업로드했습니다.
-
-```text
-sftp> put upload-test.txt
-Uploading upload-test.txt to /upload/upload-test.txt
-upload-test.txt 100% 60 29.3KB/s 00:00
-```
-
-서버에서 실제 저장 위치를 확인했습니다.
-
-```bash
-ls -l /sftp/sftpuser/upload
-```
-
-```text
--rw-r--r--. 1 sftpuser sftpuser 60  9월 14 10:11 upload-test.txt
-```
-
-`stat`으로 실제 권한과 소유권도 확인했습니다.
-
-```text
-File: /sftp/sftpuser/upload/upload-test.txt
-Size: 60
-Access: (0644/-rw-r--r--)
-Uid: (1009/sftpuser)
-Gid: (1009/sftpuser)
-```
-
-즉 Chroot 최상위 디렉터리는 `root`가 관리하고, 사용자는 허용된 `/upload` 디렉터리에서만 파일을 업로드할 수 있도록 구성했습니다.
+실제 서버의 `/sftp/sftpuser` 디렉터리가 SFTP 사용자에게는 `/`로 보이는 것을 확인하였다.
 
 ---
 
-## 14. 최종 결과
+### 12. Chroot 환경에서 파일 업로드
 
-| 테스트 | 결과 |
-|---|---|
-| OpenSSH Server 실행 | 성공 |
-| TCP 22 포트 확인 | 성공 |
-| Windows → Rocky SFTP 접속 | 성공 |
-| 파일 다운로드 `get` | 성공 |
-| 파일 업로드 `put` | 성공 |
-| Remote / Local 경로 조작 | 성공 |
-| 다른 사용자 접근 차단 | 성공 |
-| SSH 인증 로그 확인 | 성공 |
-| 일반 SSH Shell 접속 | 차단 |
-| SFTP 접속 | 성공 |
-| Chroot 경로 제한 | 성공 |
-| `/upload` 파일 업로드 | 성공 |
+파일 확인
 
-SFTP가 SSH를 기반으로 동작한다는 것을 확인하고, 파일 전송뿐만 아니라 Linux 권한과 SSH 설정을 이용하여 **SFTP 전용 사용자 및 Chroot 기반 접근 제한 환경**까지 구성했습니다.
+```bash
+sftp> lls sftp-mv.txt
+sftp-mv.txt
+```
+
+`/upload` 디렉터리에 업로드
+
+```bash
+sftp> put sftp-mv.txt
+Uploading sftp-mv.txt to /upload/sftp-mv.txt
+sftp-mv.txt                                                100%   10    10.3KB/s   00:00
+```
+
+파일 확인
+
+```bash
+sftp> ls -l
+-rw-r--r--    ? 1012     1013           10 Sep 22 10:02 sftp-mv.txt
+```
+
+접속 종료 후 실제 서버 경로 확인
+
+```bash
+[root@Server-A ~]# ls -l /sftp/sftpuser/upload/
+합계 4
+-rw-r--r--. 1 sftpuser sftpuser 10  9월 22 10:02 sftp-mv.txt
+```
+
+SFTP에서 보이는 `/upload`는 실제 서버에서는 `/sftp/sftpuser/upload`인 것을 확인하였다.
+
+---
+
+### 13. Chroot 접근 제한 확인
+
+상위 디렉터리 이동 시도
+
+```bash
+sftp> pwd
+Remote working directory: /
+
+sftp> cd ../
+sftp> pwd
+Remote working directory: /
+```
+
+상위 디렉터리로 이동을 시도해도 `/`보다 위로 이동할 수 없었다.
+
+실제 서버의 `/etc` 접근 시도
+
+```bash
+sftp> cd /etc
+stat remote: No such file or directory
+```
+
+Chroot 환경으로 인해 실제 서버의 `/etc` 디렉터리에 접근할 수 없는 것을 확인하였다.
+
+---
+
+### 14. Chroot 최상위 디렉터리 쓰기 제한 확인
+
+Chroot의 `/` 위치에 파일 업로드 시도
+
+```bash
+sftp> put sftp-mv.txt /
+Uploading sftp-mv.txt to /sftp-mv.txt
+dest open "/sftp-mv.txt": Permission denied
+```
+
+`/upload`에는 정상적으로 업로드되었다.
+
+```bash
+sftp> put sftp-mv.txt /upload
+Uploading sftp-mv.txt to /upload/sftp-mv.txt
+sftp-mv.txt                                                100%   10    20.7KB/s   00:00
+```
+
+디렉터리 권한 구조
+
+```text
+/sftp/sftpuser
+→ root:root
+→ 직접 파일 생성 불가
+
+/sftp/sftpuser/upload
+→ sftpuser:sftpuser
+→ 파일 업로드 가능
+```
+
+Chroot 최상위 디렉터리는 root가 관리하고 하위 업로드 디렉터리만 사용자에게 쓰기 권한을 부여하는 구조를 확인하였다.
+
+---
+
+### 15. SFTP 접속 로그 확인
+
+`/var/log/secure`에서 `sftpuser` 관련 로그 확인
+
+```bash
+[root@Server-A ~]# grep sftpuser /var/log/secure
+```
+
+주요 로그인 성공 기록
+
+```text
+Accepted password for sftpuser from ::1 port 34130 ssh2
+pam_unix(sshd:session): session opened for user sftpuser(uid=1012)
+Disconnected from user sftpuser ::1 port 34130
+pam_unix(sshd:session): session closed for user sftpuser
+```
+
+`journalctl`을 이용한 sshd 로그 확인
+
+```bash
+[root@Server-A ~]# journalctl -u sshd --no-pager | tail -n 20
+```
+
+로그의 의미
+
+```text
+Accepted password
+→ 인증 성공
+
+session opened
+→ 세션 시작
+
+Disconnected
+→ 연결 종료
+
+session closed
+→ 세션 종료
+```
+
+---
+
+### 16. SFTP 전용 계정의 SSH 차단 로그 확인
+
+일반 SSH 접속을 시도했을 때 다음 로그가 기록되었다.
+
+```text
+error: Connection from user sftpuser ::1 port 47182: refusing non-sftp session
+```
+
+이는 `ForceCommand internal-sftp` 설정으로 인해 SFTP가 아닌 일반 SSH Shell 세션이 거부된 기록이다.
+
+SFTP 전용 계정 설정이 정상적으로 동작하는 것을 로그에서도 확인하였다.
+
+---
+
+### 17. 인증 실패 로그 확인
+
+일부러 잘못된 비밀번호를 이용하여 접속을 시도하였다.
+
+```bash
+[root@Server-A ~]# ssh sftpuser@localhost
+sftpuser@localhost's password:
+Permission denied, please try again.
+```
+
+로그 확인
+
+```bash
+[root@Server-A ~]# grep sftpuser /var/log/secure | tail -n 10
+```
+
+결과
+
+```text
+password check failed for user (sftpuser)
+pam_unix(sshd:auth): authentication failure; user=sftpuser
+Failed password for sftpuser from ::1 port 40560 ssh2
+Connection closed by authenticating user sftpuser ::1 port 40560 [preauth]
+```
+
+성공과 실패 로그를 비교하였다.
+
+```text
+Accepted password
+→ 인증 성공
+
+Failed password
+→ 인증 실패
+```
+
+로그를 이용하여 SSH/SFTP 인증 성공 및 실패 기록을 확인할 수 있는 것을 확인하였다.
+
+---
+
+### 18. sshd_config 원본과 수정본 비교
+
+백업해둔 설정과 현재 설정을 `diff`로 비교하였다.
+
+```bash
+[root@Server-A ~]# diff /root/sshd_backup/sshd_config /etc/ssh/sshd_config
+130a131,135
+> Match User sftpuser
+>     ChrootDirectory /sftp/sftpuser
+>     ForceCommand internal-sftp
+>     AllowTcpForwarding no
+>     X11Forwarding no
+```
+
+기존 설정 파일과 현재 설정 파일의 차이가 SFTP 전용 및 Chroot 설정임을 확인하였다.
+
+현재 적용된 SFTP 전용 설정 파일을 별도로 백업하였다.
+```bash
+[root@Server-A ~]# mkdir sshd_backup2
+[root@Server-A ~]# cp /etc/ssh/sshd_config sshd_backup2/
+```
+
+백업 파일 확인
+```bash
+[root@Server-A ~]# ls -l /root/sshd_backup2/sshd_config
+-rw-------. 1 root root 3807  9월 22 10:18 /root/sshd_backup2/sshd_config
+```
+sshd_backup2에는 ForceCommand internal-sftp와 ChrootDirectory 설정이 적용된 SFTP 전용 sshd_config를 보관하였다.
+---
+
+### 19. SFTP 설정 원복 확인
+
+기존 설정으로 원복한 후 일반 SSH 접속 테스트
+
+```bash
+[root@Server-A ~]# ssh sftpuser@localhost
+sftpuser@localhost's password:
+```
+
+정상적으로 Shell 접속
+
+```bash
+[sftpuser@Server-A ~]$ whoami
+sftpuser
+
+[sftpuser@Server-A ~]$ pwd
+/home/sftpuser
+```
+
+접속 종료
+
+```bash
+[sftpuser@Server-A ~]$ exit
+로그아웃
+Connection to localhost closed.
+```
+
+SFTP 접속 확인
+
+```bash
+[root@Server-A ~]# sftp sftpuser@localhost
+sftpuser@localhost's password:
+Connected to localhost.
+
+sftp> pwd
+Remote working directory: /home/sftpuser
+```
+
+SFTP 전용 및 Chroot 설정을 제거하면 일반 SSH와 SFTP 모두 사용할 수 있으며 SFTP의 기본 위치가 다시 `/home/sftpuser`가 되는 것을 확인하였다.
+
+---
+
+### 20. SFTP 전용 Chroot 설정 재적용
+
+일반 설정 파일을 추가로 백업하였다.
+
+```bash
+[root@Server-A ~]# mkdir sshd_backup3
+[root@Server-A ~]# cp /etc/ssh/sshd_config /root/sshd_backup3/
+```
+
+SFTP 전용 설정이 저장된 백업 파일을 복원하였다.
+
+```bash
+[root@Server-A ~]# cp sshd_backup2/sshd_config /etc/ssh/
+cp: overwrite '/etc/ssh/sshd_config'? y
+```
+
+설정 검사
+
+```bash
+[root@Server-A ~]# sshd -t
+```
+
+서비스 재시작
+
+```bash
+[root@Server-A ~]# systemctl restart sshd
+```
+
+상태 확인
+
+```bash
+[root@Server-A ~]# systemctl status sshd
+● sshd.service - OpenSSH server daemon
+     Active: active (running)
+```
+
+---
+
+### 21. 최종 SFTP 전용 계정 동작 확인
+
+일반 SSH 접속 테스트
+
+```bash
+[root@Server-A ~]# ssh sftpuser@localhost
+sftpuser@localhost's password:
+This service allows sftp connections only.
+Connection to localhost closed.
+```
+
+일반 SSH Shell 접속이 제한되는 것을 확인하였다.
+
+SFTP 접속
+
+```bash
+[root@Server-A ~]# sftp sftpuser@localhost
+sftpuser@localhost's password:
+Connected to localhost.
+```
+
+Chroot 적용 확인
+
+```bash
+sftp> pwd
+Remote working directory: /
+```
+
+최종적으로 `sftpuser` 계정은 일반 SSH Shell 접속은 제한되고 SFTP 접속과 Chroot 환경만 사용할 수 있도록 구성하였다.
+
+---
+
+## 실습 결과
+
+* `sftp` 명령을 이용한 SFTP 접속 확인
+* `put` 명령을 이용한 파일 업로드
+* `get` 명령을 이용한 파일 다운로드
+* `ForceCommand internal-sftp`를 이용하여 일반 SSH Shell 접속 제한
+* `ChrootDirectory`를 이용하여 SFTP 사용자의 접근 가능 경로 제한
+* `/upload` 디렉터리에 `sftpuser` 쓰기 권한 부여
+* Chroot 환경에서 상위 디렉터리 및 실제 서버 `/etc` 접근 제한 확인
+* Chroot 최상위 `/`에는 파일 업로드가 불가능한 것을 확인
+* `/upload`에는 정상적으로 파일 업로드가 가능한 것을 확인
+* `/var/log/secure`에서 SFTP 로그인 성공 및 종료 로그 확인
+* `ForceCommand internal-sftp`에 의한 일반 SSH 세션 차단 로그 확인
+* 잘못된 비밀번호 입력 후 `Failed password` 인증 실패 로그 확인
+* `diff`를 이용하여 기존 `sshd_config`와 수정된 설정 비교
+* SFTP 설정 원복 후 일반 SSH 및 SFTP 접속 확인
+* SFTP 전용 Chroot 설정을 다시 적용하여 최종 동작 확인
