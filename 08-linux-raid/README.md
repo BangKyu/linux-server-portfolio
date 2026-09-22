@@ -1,617 +1,1126 @@
-# Linux RAID 실습
+# Linux Software RAID 구성 및 장애 복구 실습
 
-Rocky Linux 환경에서 `mdadm`을 이용하여 Software RAID를 구성하고  
-Linear RAID, RAID0, RAID1, RAID5의 특징과 장애 복구 과정을 실습했습니다.
+## 실습 개요
 
----
+Rocky Linux에서 `mdadm`을 이용하여 Linear RAID, RAID 0, RAID 10, RAID 5, RAID 6을 구성하였다.
 
-## 1. 실습 목표
+각 RAID에 ext4 파일시스템을 생성하고 원하는 디렉터리에 마운트한 후 UUID를 이용하여 `/etc/fstab`에 영구 마운트를 설정하였다.
 
-- Linux Software RAID 구성 방법 확인
-- Linear RAID, RAID0, RAID1, RAID5 구성
-- RAID별 용량 및 특징 비교
-- 파일시스템 생성 및 마운트
-- RAID 디스크 장애 상황 확인
-- 장애 디스크 제거 및 재추가
-- RAID 복구 후 데이터 유지 확인
-- `/etc/mdadm.conf`, `/etc/fstab`을 이용한 영구 설정
-- 재부팅 후 RAID 자동 조립 및 자동 마운트 확인
+또한 디스크 장애를 발생시켜 RAID별 장애 허용 범위를 확인하고 RAID 10의 Rebuild, RAID 5의 Hot Spare 자동 복구, RAID 6의 다중 디스크 장애 상황을 실습하였다.
 
 ---
 
-## 2. 실습 환경
+## 실습 과정
 
-```text
-OS      : Rocky Linux 9
-RAID    : Linux Software RAID
-Tool    : mdadm
-Disk    : VMware Virtual Disk
-FS      : ext4
+### 1. 디스크 상태 확인
+
+현재 시스템의 디스크와 파일시스템 확인
+
+```
+[root@Server-A ~]# lsblk -f
+NAME FSTYPE FSVER LABEL UUID                                 FSAVAIL FSUSE% MOUNTPOINTS
+sda
+├─sda1
+│    swap   1           a4e70e42-b4f9-468e-a9db-e0f60f7c217b                [SWAP]
+└─sda2
+     xfs                0d31b54e-e1d8-4b91-8a86-9e5bb76b8950   88.7G     8% /
+sdb
+sdc
+sdd
+sde
+sdf
+sr0  iso966 Jolie Rocky-9-8-x86_64-dvd
+                      2026-05-25-17-10-45-00
 ```
 
-RAID 실습에는 별도의 10G 디스크를 사용했습니다.
+`/dev/sda`는 운영체제가 설치된 100G 디스크이므로 RAID 실습 대상에서 제외하였다.
 
-> `/dev/sdX` 장치명은 재부팅 후 변경될 수 있으므로  
-> 실제 작업 전 `lsblk`, `blkid`, `mdadm --detail` 등을 이용하여 장치를 확인했습니다.
+`/dev/sdb~sdf` 100G 디스크를 RAID 실습용으로 사용하였다.
 
 ---
 
-## 3. RAID 종류
+### 2. RAID용 파티션 생성
 
-| RAID | 구성 | 사용 가능 용량 | 장애 허용 |
-|---|---|---:|---|
-| Linear | 디스크 연결 | 전체 용량 합계 | 없음 |
-| RAID0 | Striping | 전체 용량 합계 | 없음 |
-| RAID1 | Mirroring | 디스크 1개 용량 | 1개 |
-| RAID5 | Striping + Parity | `(N-1) × 최소 디스크 용량` | 1개 |
+`fdisk`를 이용하여 RAID에서 사용할 파티션 생성
 
----
+```
+[root@Server-A ~]# fdisk /dev/sdb
 
-# 4. Linear RAID
+Command (m for help): n
+Select (default p):
+Partition number (1-4, default 1):
+First sector:
+Last sector:
 
-두 개의 디스크를 하나의 연속된 논리 디스크처럼 사용하는 Linear RAID를 구성했습니다.
+Command (m for help): t
+Hex code or alias (type L to list all): fd
 
-```bash
-mdadm --create /dev/md0 \
-  --level=linear \
-  --raid-devices=2 \
-  <RAID_MEMBER_1> <RAID_MEMBER_2>
+Command (m for help): p
+
+Device     Boot Start       End   Sectors  Size Id Type
+/dev/sdb1        2048 209715199 209713152  100G fd Linux raid autodetect
+
+Command (m for help): w
 ```
 
-RAID 상태 확인:
+`/dev/sdc`, `/dev/sdd`, `/dev/sde`, `/dev/sdf`도 동일한 방법으로 RAID용 파티션을 생성하였다.
 
-```bash
-cat /proc/mdstat
-mdadm --detail /dev/md0
-mdadm --detail --scan
+파티션 Type은 `fd Linux raid autodetect`로 설정하였다.
 ```
-
-약 10G 디스크 2개를 연결하여 약 20G 공간으로 구성했습니다.
-
-```text
-RAID Level : linear
-Array Size : 약 20G
-```
-
-ext4 파일시스템을 생성하고 `/linear`에 마운트했습니다.
-
-```bash
-mkfs.ext4 /dev/md0
-mkdir /linear
-mount /dev/md0 /linear
-```
-
-### 확인한 내용
-
-- 여러 디스크의 공간을 순서대로 연결
-- 전체 디스크 용량을 사용할 수 있음
-- 데이터 중복 저장이나 패리티가 없음
-- 디스크 장애에 대한 보호 기능 없음
-
----
-
-# 5. RAID0
-
-두 개의 10G 디스크를 이용하여 RAID0을 구성했습니다.
-
-```bash
-mdadm --create /dev/md0 \
-  --level=0 \
-  --raid-devices=2 \
-  /dev/sdc1 /dev/sdd1
-```
-
-구성 결과:
-
-```text
-Raid Level : raid0
-Array Size : 20951040 (19.98 GiB 21.45 GB)
-Raid Devices : 2
-Active Devices : 2
-Working Devices : 2
-Failed Devices : 0
-Chunk Size : 512K
-```
-
-약 10G 디스크 2개를 RAID0으로 구성하여 약 20G를 사용할 수 있었습니다.
-
-ext4 생성 및 마운트:
-
-```bash
-mkfs.ext4 /dev/md0
-mkdir /raid0
-mount /dev/md0 /raid0
-```
-
-마운트 결과:
-
-```text
-TARGET SOURCE   FSTYPE OPTIONS
-/raid0 /dev/md0 ext4   rw,relatime,seclabel,stripe=256
-```
-
-```text
-Filesystem Type Size Used Avail Use% Mounted on
-/dev/md0   ext4  20G  24K   19G   1% /raid0
-```
-
-### 재부팅 후 확인
-
-재부팅 후 RAID 멤버의 `/dev/sdX` 장치명이 변경되었지만 RAID 메타데이터를 이용하여 정상적으로 RAID0이 조립되었습니다.
-
-```text
-md0 : active raid0 ...
-      20951040 blocks super 1.2 512k chunks
-```
-
-### 확인한 내용
-
-- 데이터를 여러 디스크에 나누어 저장하는 Striping 방식
-- 디스크 전체 용량 사용 가능
-- RAID 자체적인 장애 복구 기능 없음
-- RAID 구성 디스크 하나가 손상되면 전체 RAID에 문제가 발생할 수 있음
-
----
-
-# 6. RAID1
-
-두 개의 10G 디스크를 이용하여 RAID1을 구성했습니다.
-
-```bash
-mdadm --create /dev/md0 \
-  --level=1 \
-  --raid-devices=2 \
-  /dev/sdd1 /dev/sde1
-```
-
-초기 동기화 완료 후 상태:
-
-```text
-md0 : active raid1 sde1[1] sdd1[0]
-      10475520 blocks super 1.2 [2/2] [UU]
-```
-
-상세 상태:
-
-```text
-Raid Level : raid1
-Array Size : 10475520 (9.99 GiB 10.73 GB)
-Raid Devices : 2
-Active Devices : 2
-Working Devices : 2
-Failed Devices : 0
-State : clean
-```
-
-RAID1은 약 10G 디스크 두 개를 사용했지만 동일한 데이터를 복제하기 때문에 사용 가능한 용량은 약 10G였습니다.
-
----
-
-## RAID1 장애 테스트
-
-`/dev/sde1`을 장애 상태로 변경했습니다.
-
-```bash
-mdadm /dev/md0 --fail /dev/sde1
-```
-
-장애 발생 후:
-
-```text
-md0 : active raid1 sde1[1](F) sdd1[0]
-      10475520 blocks super 1.2 [2/1] [U_]
-```
-
-```text
-State : clean, degraded
-Active Devices : 1
-Working Devices : 1
-Failed Devices : 1
-```
-
-RAID가 degraded 상태에서도 기존 데이터가 정상적으로 읽히는 것을 확인했습니다.
-
-장애 디스크 제거:
-
-```bash
-mdadm /dev/md0 --remove /dev/sde1
-```
-
-다시 RAID에 추가:
-
-```bash
-mdadm /dev/md0 --add /dev/sde1
-```
-
-복구 완료 후:
-
-```text
-[2/2] [UU]
-
-State : clean
-Active Devices : 2
-Working Devices : 2
-Failed Devices : 0
-```
-
-### 확인한 내용
-
-- RAID1은 동일한 데이터를 두 디스크에 복제
-- 디스크 1개 장애 발생 시에도 서비스 가능
-- 장애 디스크 제거 후 새로운 디스크를 추가하여 복구 가능
-- 사용 가능한 용량은 디스크 한 개 크기
-
----
-
-# 7. RAID5
-
-10G 디스크 3개를 이용하여 RAID5를 구성했습니다.
-
-```bash
-mdadm --create /dev/md0 \
-  --level=5 \
-  --raid-devices=3 \
-  /dev/sdc1 /dev/sdd1 /dev/sde1
-```
-
-초기 RAID 생성 과정에서는 recovery가 진행되었습니다.
-
-```text
-State : clean, degraded, recovering
-Active Devices : 2
-Working Devices : 3
-Failed Devices : 0
-Spare Devices : 1
-```
-
-복구 완료 후:
-
-```text
-md0 : active raid5 sde1[3] sdd1[1] sdc1[0]
-      20951040 blocks super 1.2 level 5, 512k chunk,
-      algorithm 2 [3/3] [UUU]
-```
-
-상세 상태:
-
-```text
-Raid Level : raid5
-Array Size : 20951040 (19.98 GiB 21.45 GB)
-Used Dev Size : 10475520 (9.99 GiB 10.73 GB)
-Raid Devices : 3
-Active Devices : 3
-Working Devices : 3
-Failed Devices : 0
-State : clean
-Chunk Size : 512K
-```
-
-10G 디스크 3개를 사용하여 약 20G의 사용 가능한 공간을 확보했습니다.
-
-```text
-RAID5 용량
-
-(N - 1) × 최소 디스크 용량
-
-(3 - 1) × 10G
-= 약 20G
+[root@Server-A ~]# lsblk -f
+sdb
+└─sdb1
+sdc
+└─sdc1
+sdd
+└─sdd1
+sde
+└─sde1
+sdf
+└─sdf1
 ```
 
 ---
 
-## RAID5 파일시스템 및 마운트
+### 3. Linear RAID 구성
+
+`/dev/sdb1`, `/dev/sdc1`을 이용하여 Linear RAID 생성
+
+```
+[root@Server-A ~]# mdadm --create /dev/md0 --level=linear --raid-devices=2 /dev/sdb1 /dev/sdc1
+mdadm: Defaulting to version 1.2 metadata
+mdadm: array /dev/md0 started.
+```
+
+RAID 상태 확인
+
+```
+[root@Server-A ~]# mdadm --detail /dev/md0
+/dev/md0:
+           Version : 1.2
+        Raid Level : linear
+        Array Size : 209580032 (199.87 GiB 214.61 GB)
+      Raid Devices : 2
+     Active Devices : 2
+    Working Devices : 2
+     Failed Devices : 0
+              State : clean
+```
+
+100G 디스크 2개의 공간이 연결되어 약 200G의 Linear RAID가 생성되는 것을 확인하였다.
+
+---
+
+### 4. Linear RAID 파일시스템 생성 및 /linear 마운트
+
+`/dev/md0`에 ext4 파일시스템 생성
 
 ```bash
-mkfs.ext4 /dev/md0
-
-mkdir -p /raid5
-mount /dev/md0 /raid5
+[root@Server-A ~]# mkfs.ext4 /dev/md0
 ```
 
-확인:
-
-```text
-TARGET SOURCE   FSTYPE OPTIONS
-/raid5 /dev/md0 ext4   rw,relatime,seclabel,stripe=256
-```
-
-```text
-Filesystem Type Size Used Avail Use% Mounted on
-/dev/md0   ext4  20G  28K   19G   1% /raid5
-```
-
-테스트 파일 생성:
+마운트 디렉터리 생성 후 마운트
 
 ```bash
-echo "RAID5 정상 동작 테스트" > /raid5/test.txt
-cat /raid5/test.txt
+[root@Server-A ~]# mkdir /linear
+[root@Server-A ~]# mount /dev/md0 /linear
 ```
 
-결과:
+확인
 
-```text
-RAID5 정상 동작 테스트
+```bash
+[root@Server-A ~]# lsblk -f /dev/md0
+NAME FSTYPE FSVER UUID                                  FSAVAIL FSUSE% MOUNTPOINTS
+md0  ext4   1.0   f089dd92-4044-4ffa-aad2-10c4bacd3116  185.7G     0% /linear
+```
+
+`/dev/md0`이 `/linear`에 마운트되었다.
+
+---
+
+### 5. Linear RAID /etc/fstab 영구 마운트 설정
+
+`/etc/fstab`에 다음 내용을 추가하였다.
+
+```
+UUID=f089dd92-4044-4ffa-aad2-10c4bacd3116 /linear ext4 defaults 0 0
+```
+
+설정 반영 및 재마운트 테스트
+
+```
+[root@Server-A ~]# systemctl daemon-reload
+[root@Server-A ~]# umount /linear
+[root@Server-A ~]# mount -a
+```
+
+확인
+
+```
+[root@Server-A ~]# df -hT /linear
+Filesystem     Type  Size  Used Avail Use% Mounted on
+/dev/md0       ext4  196G   28K  186G   1% /linear
+```
+
+UUID 기반 영구 마운트 설정이 정상적으로 적용되는 것을 확인하였다.
+
+---
+
+### 6. RAID 0 구성
+
+기존 Linear RAID를 제거한 후 `/dev/sdb1`, `/dev/sdc1`을 RAID 0으로 구성하였다.
+
+```
+[root@Server-A ~]# mdadm --create /dev/md0 --level=0 --raid-devices=2 /dev/sdb1 /dev/sdc1
+mdadm: Defaulting to version 1.2 metadata
+mdadm: array /dev/md0 started.
+```
+
+RAID 상태 확인
+
+```
+[root@Server-A ~]# mdadm --detail /dev/md0
+/dev/md0:
+        Raid Level : raid0
+        Array Size : 209580032 (199.87 GiB 214.61 GB)
+      Raid Devices : 2
+    Active Devices : 2
+   Working Devices : 2
+    Failed Devices : 0
+        Chunk Size : 512K
+```
+
+RAID 0은 Striping 방식으로 100G 디스크 2개의 전체 공간을 사용하여 약 200G의 저장 공간이 생성되었다.
+
+RAID 0은 성능은 높지만 디스크 장애 허용 기능은 제공하지 않는다.
+
+---
+
+### 7. RAID 0 파일시스템 및 /RAID0 마운트
+
+ext4 파일시스템 생성
+
+```
+[root@Server-A ~]# mkfs.ext4 /dev/md0
+```
+
+
+마운트
+
+```
+[root@Server-A ~]# mkdir /RAID0
+[root@Server-A ~]# mount /dev/md0 /RAID0
+```
+
+확인
+```
+[root@Server-A ~]# lsblk -f /dev/md0
+NAME FSTYPE FSVER LABEL UUID                                  FSAVAIL FSUSE% MOUNTPOINTS
+md0  ext4   1.0         fe4c96db-a780-488d-8587-57b5351bf2fe  185.7G     0% /RAID0
+
+
+```
+
+`/etc/fstab`에 다음 내용을 추가하였다.
+
+```
+UUID=fe4c96db-a780-488d-8587-57b5351bf2fe /RAID0 ext4 defaults 0 0
+```
+
+설정 반영 및 재마운트
+
+```
+[root@Server-A ~]# systemctl daemon-reload
+[root@Server-A ~]# umount /RAID0
+[root@Server-A ~]# mount -a
+```
+
+확인
+
+```
+[root@Server-A ~]# df -hT /RAID0
+Filesystem     Type  Size  Used Avail Use% Mounted on
+/dev/md0       ext4  196G   28K  186G   1% /RAID0
+```
+
+RAID 0 영구 마운트 설정이 정상적으로 동작하는 것을 확인하였다.
+
+---
+
+### 8. RAID 10 구성
+
+`RAID 0`을 제거한 후 `/dev/sdb1`, `/dev/sdc1`, `/dev/sdd1`, `/dev/sde1`을 이용하여 RAID 10 생성
+
+```
+[root@Server-A ~]# mdadm --create /dev/md10 --level=10 --raid-devices=4 /dev/sdb1 /dev/sdc1 /dev/sdd1 /dev/sde1
+
+mdadm: Defaulting to version 1.2 metadata
+mdadm: array /dev/md10 started.
+```
+
+RAID 상태 확인
+
+```
+[root@Server-A ~]# mdadm --detail /dev/md10
+/dev/md10:
+           Version : 1.2
+        Raid Level : raid10
+        Array Size : 209580032 (199.87 GiB 214.61 GB)
+     Used Dev Size : 104790016 (99.94 GiB 107.30 GB)
+      Raid Devices : 4
+     Total Devices : 4
+      Intent Bitmap : Internal
+              State : clean, resyncing
+     Active Devices : 4
+    Working Devices : 4
+     Failed Devices : 0
+             Layout : near=2
+         Chunk Size : 512K
+```
+
+RAID 10은 Mirroring과 Striping을 결합한 구조로 4개의 100G 디스크에서 약 200G를 사용할 수 있는 것을 확인하였다.
+
+---
+
+### 9. RAID 10 파일시스템 및 /RAID10 마운트
+
+ext4 파일시스템 생성
+
+```
+[root@Server-A ~]# mkfs.ext4 /dev/md10
+```
+
+마운트
+
+```
+[root@Server-A ~]# mkdir /RAID10
+[root@Server-A ~]# mount /dev/md10 /RAID10
+```
+
+확인
+
+```
+[root@Server-A ~]# lsblk -f /dev/md10
+NAME FSTYPE FSVER UUID                                 FSAVAIL FSUSE% MOUNTPOINTS
+md10 ext4   1.0   fdd668de-0de0-4d65-87b9-2e246a79e909 185.7G     0% /RAID10
+```
+
+`/etc/fstab`에 다음 내용을 추가하였다.
+
+```
+UUID=fdd668de-0de0-4d65-87b9-2e246a79e909 /RAID10 ext4 defaults 0 0
+```
+
+재마운트 테스트
+
+```
+[root@Server-A ~]# systemctl daemon-reload
+[root@Server-A ~]# umount /RAID10
+[root@Server-A ~]# mount -a
+
+[root@Server-A ~]# df -hT /RAID10
+Filesystem     Type  Size  Used Avail Use% Mounted on
+/dev/md10      ext4  196G   28K  186G   1% /RAID10
+```
+
+RAID 10 영구 마운트 설정이 정상적으로 동작하는 것을 확인하였다.
+
+---
+
+### 10. RAID 10 데이터 저장 및 디스크 장애 테스트
+
+장애 테스트를 위해 `/etc`에서 `f`로 시작하는 파일과 디렉터리를 `/RAID10`에 복사하였다.
+
+```
+[root@Server-A ~]# cp -r /etc/f* /RAID10
+
+[root@Server-A ~]# ls -l /RAID10
+합계 56
+lrwxrwxrwx. 1 root root    56  9월 18 10:52 favicon.png -> /usr/share/icons/hicolor/16x16/apps/fedora-logo-icon.png
+-rw-r--r--. 1 root root    66  9월 18 10:52 filesystems
+drwxr-xr-x. 3 root root  4096  9월 18 10:52 firefox
+drwxr-x---. 8 root root  4096  9월 18 10:52 firewalld
+drwxr-xr-x. 3 root root  4096  9월 18 10:52 flatpak
+drwxr-xr-x. 3 root root  4096  9월 18 10:52 fonts
+drwxr-xr-x. 3 root root  4096  9월 18 10:52 foomatic
+-rw-r--r--. 1 root root    20  9월 18 10:52 fprintd.conf
+-rw-r--r--. 1 root root   589  9월 18 10:52 fstab
+-rw-r--r--. 1 root root    38  9월 18 10:52 fuse.conf
+drwxr-xr-x. 4 root root  4096  9월 18 10:52 fwupd
+```
+
+RAID 구성 디스크 1개를 제거한 후 상태 확인
+
+```
+[root@Server-A ~]# shutdown now
+VMware에서 하드디스크 하나 제거
+```
+
+```
+[root@Server-A ~]# mdadm --detail /dev/md10
+/dev/md10:
+              State : clean, degraded
+       Raid Devices : 4
+      Total Devices : 3
+     Active Devices : 3
+    Working Devices : 3
+     Failed Devices : 0
+```
+
+장치 목록에서 RAID 구성 디스크 하나가 `removed` 상태로 표시되었다.
+
+```
+Number   Major   Minor   RaidDevice State
+   0       8       17        0      active sync set-A   /dev/sdb1
+   1       8       33        1      active sync set-B   /dev/sdc1
+   -       0        0        2      removed
+   3       8       49        3      active sync set-B   /dev/sdd1
+```
+
+디스크 1개가 제거된 상태에서도 `/RAID10`의 데이터가 정상적으로 유지되는 것을 확인하였다.
+
+---
+
+### 11. RAID 10 장애 디스크 복구
+
+새 디스크 `/dev/sde1`을 RAID 10에 추가하였다.
+
+```
+[root@Server-A ~]# mdadm /dev/md10 --add /dev/sde1
+mdadm: added /dev/sde1
+```
+
+RAID 상태 확인
+
+```
+[root@Server-A ~]# mdadm --detail /dev/md10
+/dev/md10:
+              State : clean, degraded, recovering
+     Active Devices : 3
+    Working Devices : 4
+     Failed Devices : 0
+      Spare Devices : 1
+
+     Rebuild Status : 4% complete
+```
+
+새로 추가된 `/dev/sde1`이 다음과 같이 표시되었다.
+
+```
+spare rebuilding   /dev/sde1
+```
+
+장애 디스크를 교체하면 RAID 10이 자동으로 데이터를 새 디스크에 Rebuild하는 것을 확인하였다.
+
+---
+
+### 12. RAID 5 구성
+
+기존 RAID 10을 제거 후 `/dev/sdb1`, `/dev/sdc1`, `/dev/sdd1`, `/dev/sde1`을 이용하여 RAID 5 생성
+
+```
+[root@Server-A ~]# mdadm --create /dev/md5 --level=5 --raid-devices=4 /dev/sdb1 /dev/sdc1 /dev/sdd1 /dev/sde1
+
+mdadm: Defaulting to version 1.2 metadata
+mdadm: array /dev/md5 started.
+```
+
+확인
+
+```
+[root@Server-A ~]# mdadm --detail /dev/md5
+/dev/md5:
+           Version : 1.2
+        Raid Level : raid5
+        Array Size : 314370048 (299.81 GiB 321.91 GB)
+     Used Dev Size : 104790016 (99.94 GiB 107.30 GB)
+      Raid Devices : 4
+     Total Devices : 4
+             Layout : left-symmetric
+         Chunk Size : 512K
+```
+
+AID 5는 4개의 100G 디스크에서 1개 디스크 분량의 용량을 Parity에 사용하기 때문에 약 300G의 공간을 사용할 수 있는 것을 확인하였다.
+
+---
+
+### 13. RAID 5 파일시스템 생성 및 /RAID5 마운트
+
+ext4 파일시스템 생성
+
+```
+[root@Server-A ~]# mkfs.ext4 /dev/md5
+```
+
+마운트 디렉터리 생성 후 마운트
+
+```
+[root@Server-A ~]# mkdir /RAID5
+[root@Server-A ~]# mount /dev/md5 /RAID5
+```
+
+확인
+```
+[root@Server-A ~]# mount | grep RAID5
+/dev/md5 on /RAID5 type ext4 (rw,relatime,seclabel,stripe=384)
+```
+
+용량 확인
+
+```
+[root@Server-A ~]# df -hT /RAID5
+Filesystem     Type  Size  Used Avail Use% Mounted on
+/dev/md5       ext4  295G   28K  280G   1% /RAID5
 ```
 
 ---
 
-# 8. RAID5 장애 테스트
+### 14. RAID 5 UUID 기반 영구 마운트 설정
 
-`/dev/sde1`을 장애 상태로 변경했습니다.
+`/etc/fstab`에 다음 내용을 추가하였다.
 
-```bash
-mdadm /dev/md0 --fail /dev/sde1
+```
+UUID=7a029c15-a537-4c1e-8125-5f26a2179a13 /RAID5 ext4 defaults 0 0
 ```
 
-장애 발생 후:
+설정 반영 및 재마운트
 
-```text
-md0 : active raid5 sde1[3](F) sdd1[1] sdc1[0]
-      20951040 blocks super 1.2 level 5,
-      512k chunk, algorithm 2 [3/2] [UU_]
+```
+[root@Server-A ~]# systemctl daemon-reload
+[root@Server-A ~]# umount /RAID5
+[root@Server-A ~]# mount -a
 ```
 
-상세 상태:
+확인
 
-```text
-State : clean, degraded
-Active Devices : 2
-Working Devices : 2
-Failed Devices : 1
+```
+[root@Server-A ~]# df -hT /RAID5
+Filesystem     Type  Size  Used Avail Use% Mounted on
+/dev/md5       ext4  295G   28K  280G   1% /RAID5
 ```
 
-RAID5가 degraded 상태임에도 기존 파일을 읽을 수 있었습니다.
-
-```bash
-cat /raid5/test.txt
-```
-
-```text
-RAID5 정상 동작 테스트
-```
+`/etc/fstab`을 이용하여 RAID 5가 정상적으로 다시 마운트되는 것을 확인하였다.
 
 ---
 
-## degraded 상태 쓰기 테스트
+### 15. RAID 5 데이터 저장
 
-장애가 발생한 상태에서 새로운 파일을 생성했습니다.
+장애 테스트를 위해 `/etc`에서 `c`로 시작하는 모든 파일과 디렉터리를 `/RAID5`에 복사하였다.
 
-```bash
-echo "RAID5 degraded 상태에서도 저장 성공" \
-  > /raid5/degraded-test.txt
+```
+[root@Server-A ~]# cp -r /etc/c* /RAID5
+
+[root@Server-A ~]# ls -l /RAID5
+합계 80
+drwxr-xr-x. 3 root root  4096  9월 18 11:16 chromium
+-rw-r--r--. 1 root root  1370  9월 18 11:16 chrony.conf
+-rw-r-----. 1 root root   540  9월 18 11:16 chrony.keys
+drwxr-xr-x. 2 root root  4096  9월 18 11:16 cifs-utils
+drwxr-xr-x. 4 root root  4096  9월 18 11:16 cockpit
+drwxr-xr-x. 2 root root  4096  9월 18 11:16 cron.d
+drwxr-xr-x. 2 root root  4096  9월 18 11:16 cron.daily
+-rw-r--r--. 1 root root     0  9월 18 11:16 cron.deny
+drwxr-xr-x. 6 root root  4096  9월 18 11:16 crypto-policies
+-rw-------. 1 root root     0  9월 18 11:16 crypttab
+drwxr-xr-x. 4 root root  4096  9월 18 11:16 cups
 ```
 
-확인:
-
-```text
-RAID5 degraded 상태에서도 저장 성공
-```
-
-파일 목록:
-
-```text
--rw-r--r--. 1 root root 45 degraded-test.txt
--rw-r--r--. 1 root root 30 test.txt
-```
-
-따라서 RAID5는 디스크 1개가 장애 난 상태에서도 데이터 읽기와 쓰기가 가능한 것을 확인했습니다.
+RAID 5 장애 테스트용 데이터가 정상적으로 저장되는 것을 확인하였다.
 
 ---
 
-# 9. RAID5 장애 복구
+### 16. RAID 5 디스크 장애 테스트
 
-장애 디스크를 RAID에서 제거했습니다.
+RAID 5가 정상 상태인지 확인하였다.
 
-```bash
-mdadm /dev/md0 --remove /dev/sde1
+```
+[root@Server-A ~]# mdadm --detail /dev/md5
+/dev/md5:
+              State : clean
+     Active Devices : 4
+    Working Devices : 4
+     Failed Devices : 0
+      Spare Devices : 0
 ```
 
-다시 RAID 멤버로 추가했습니다.
+`/dev/sdc1`에 논리적인 장애 발생
 
-```bash
-mdadm /dev/md0 --add /dev/sde1
+```
+[root@Server-A ~]# mdadm --fail /dev/md5 /dev/sdc1
 ```
 
-복구 완료 후:
+확인
 
-```text
-[3/3] [UUU]
+```
+[root@Server-A ~]# mdadm --detail /dev/md5
+/dev/md5:
+              State : clean, degraded
+     Active Devices : 3
+    Working Devices : 3
+     Failed Devices : 1
+      Spare Devices : 0
 ```
 
-상세 상태:
+장애 디스크
 
-```text
-State : clean
-Active Devices : 3
-Working Devices : 3
-Failed Devices : 0
-Spare Devices : 0
+```
+faulty   /dev/sdc1
 ```
 
-복구 후 데이터 확인:
+데이터 확인
 
-```bash
-cat /raid5/test.txt
-cat /raid5/degraded-test.txt
+```
+[root@Server-A ~]# ls -l /RAID5
+합계 80
+drwxr-xr-x. 3 root root  4096  9월 18 11:16 chromium
+-rw-r--r--. 1 root root  1370  9월 18 11:16 chrony.conf
+-rw-r-----. 1 root root   540  9월 18 11:16 chrony.keys
+drwxr-xr-x. 2 root root  4096  9월 18 11:16 cifs-utils
+drwxr-xr-x. 4 root root  4096  9월 18 11:16 cockpit
+drwxr-xr-x. 2 root root  4096  9월 18 11:16 cron.d
+drwxr-xr-x. 2 root root  4096  9월 18 11:16 cron.daily
+-rw-r--r--. 1 root root     0  9월 18 11:16 cron.deny
+drwxr-xr-x. 6 root root  4096  9월 18 11:16 crypto-policies
+-rw-------. 1 root root     0  9월 18 11:16 crypttab
+drwxr-xr-x. 4 root root  4096  9월 18 11:16 cups
 ```
 
-결과:
-
-```text
-RAID5 정상 동작 테스트
-RAID5 degraded 상태에서도 저장 성공
-```
-
-장애 디스크 복구 후에도 기존 데이터와 degraded 상태에서 생성한 데이터가 정상적으로 유지되었습니다.
+디스크 1개가 장애 상태임에도 기존 데이터가 정상적으로 유지되는 것을 확인하였다.
 
 ---
 
-# 10. RAID 영구 설정
+### 17. RAID 5 장애 디스크 재추가
 
-RAID 정보를 `/etc/mdadm.conf`에 등록했습니다.
+Faulty 상태의 `/dev/sdc1`을 바로 다시 추가하였다.
 
-```bash
-mdadm --detail --scan > /etc/mdadm.conf
+```
+[root@Server-A ~]# mdadm --add /dev/md5 /dev/sdc1
+mdadm: Cannot open /dev/sdc1: Device or resource busy
 ```
 
-설정 내용:
+`/dev/sdc1`이 아직 Faulty 장치로 RAID에 등록되어 있기 때문에 바로 추가할 수 없었다.
 
-```text
-ARRAY /dev/md0 metadata=1.2 UUID=980bd44b:85927ed8:da33bb9b:fe75266b
+RAID에서 장애 디스크 제거
+
+```
+[root@Server-A ~]# mdadm --remove /dev/md5 /dev/sdc1
+mdadm: hot removed /dev/sdc1 from /dev/md5
 ```
 
-RAID5 ext4 파일시스템 UUID:
+다시 추가
 
-```text
-49fe1783-e3f1-418a-b63a-ace33b94938e
+```
+[root@Server-A ~]# mdadm --add /dev/md5 /dev/sdc1
+mdadm: re-added /dev/sdc1
 ```
 
-`/etc/fstab`에 다음 항목을 추가했습니다.
+확인
 
-```text
-UUID=49fe1783-e3f1-418a-b63a-ace33b94938e  /raid5  ext4  defaults  0 2
+```
+[root@Server-A ~]# mdadm --detail /dev/md5
+/dev/md5:
+              State : clean, degraded, recovering
+     Active Devices : 3
+    Working Devices : 4
+      Spare Devices : 1
+
+     Rebuild Status : 4% complete
+
+spare rebuilding   /dev/sdc1
 ```
 
-재부팅 전 설정 확인:
-
-```bash
-systemctl daemon-reload
-
-umount /raid5
-mount -a
-
-findmnt /raid5
-```
-
-결과:
-
-```text
-TARGET SOURCE   FSTYPE OPTIONS
-/raid5 /dev/md0 ext4   rw,relatime,seclabel,stripe=256
-```
-
-initramfs 갱신:
-
-```bash
-dracut -f
-```
-
-이후 시스템을 재부팅했습니다.
-
-```bash
-reboot
-```
+장애 디스크를 제거한 후 다시 추가하면 RAID가 자동으로 Rebuild되는 것을 확인하였다.
 
 ---
 
-# 11. 재부팅 후 RAID5 확인
+### 18. RAID 5 Hot Spare 구성
 
-재부팅 후 RAID가 자동으로 조립된 것을 확인했습니다.
+RAID 5의 정상 Active Disk 4개 외에 `/dev/sdd1`을 Hot Spare로 추가하였다.
 
-```bash
-cat /proc/mdstat
+```
+[root@Server-A ~]# mdadm --add /dev/md5 /dev/sdd1
+mdadm: added /dev/sdd1
 ```
 
-```text
-md0 : active raid5 sdc1[0] sde1[3] sdd1[1]
-      20951040 blocks super 1.2 level 5,
-      512k chunk, algorithm 2 [3/3] [UUU]
+확인
+
+```
+[root@Server-A ~]# mdadm --detail /dev/md5
+/dev/md5:
+      Raid Devices : 4
+     Total Devices : 5
+              State : clean
+     Active Devices : 4
+    Working Devices : 5
+     Failed Devices : 0
+      Spare Devices : 1
 ```
 
-상세 상태:
+현재 RAID 구성
 
-```text
-State : clean
-Active Devices : 3
-Working Devices : 3
-Failed Devices : 0
+```
+/dev/sdb1  active sync
+/dev/sdc1  active sync
+/dev/sde1  active sync
+/dev/sdf1  active sync
+
+/dev/sdd1  spare
 ```
 
-`/raid5`도 자동으로 마운트되었습니다.
-
-```text
-TARGET SOURCE   FSTYPE OPTIONS
-/raid5 /dev/md0 ext4   rw,relatime,seclabel,stripe=256
-```
-
-```text
-Filesystem Type Size Used Avail Use% Mounted on
-/dev/md0   ext4  20G  32K   19G   1% /raid5
-```
-
-재부팅 후에도 테스트 데이터가 정상적으로 유지되었습니다.
-
-```text
-RAID5 정상 동작 테스트
-RAID5 degraded 상태에서도 저장 성공
-```
+4개의 디스크는 RAID 5의 실제 구성 디스크로 사용되고 `/dev/sdd1`은 장애 발생에 대비한 Hot Spare로 대기하는 것을 확인하였다.
 
 ---
 
-# 12. 주요 명령어 정리
+### 19. RAID 5 Hot Spare 자동 복구 테스트
 
-```bash
-# RAID 생성
-mdadm --create /dev/md0 --level=<LEVEL> \
-  --raid-devices=<COUNT> <DEVICE...>
+Active Disk인 `/dev/sdb1`에 장애 발생
 
-# RAID 상태 확인
-cat /proc/mdstat
-
-# RAID 상세 확인
-mdadm --detail /dev/md0
-
-# RAID 정보 확인
-mdadm --detail --scan
-
-# 디스크 장애 처리
-mdadm /dev/md0 --fail <DEVICE>
-
-# 장애 디스크 제거
-mdadm /dev/md0 --remove <DEVICE>
-
-# 디스크 추가
-mdadm /dev/md0 --add <DEVICE>
-
-# RAID 중지
-mdadm --stop /dev/md0
-
-# RAID 메타데이터 제거
-mdadm --zero-superblock <DEVICE>
 ```
+[root@Server-A ~]# mdadm --fail /dev/md5 /dev/sdb1
+```
+
+확인
+
+```
+[root@Server-A ~]# mdadm --detail /dev/md5
+/dev/md5:
+              State : clean, degraded, recovering
+     Active Devices : 3
+    Working Devices : 4
+     Failed Devices : 1
+      Spare Devices : 1
+
+     Rebuild Status : 2% complete
+```
+
+Hot Spare였던 `/dev/sdd1`의 상태
+
+```
+spare rebuilding   /dev/sdd1
+```
+
+`/dev/sdb1`에 장애가 발생하자 Hot Spare인 `/dev/sdd1`이 자동으로 RAID에 투입되어 Rebuild를 시작하는 것을 확인하였다.
 
 ---
 
-# 13. 실습 결과
+### 20. RAID 5 Hot Spare 복구 완료 확인
 
-이번 실습을 통해 Linux Software RAID의 생성부터 장애 및 복구까지 직접 확인했습니다.
+Rebuild 완료 후 상태 확인
 
-특히 RAID1과 RAID5에서 실제 디스크 장애를 발생시켜 degraded 상태를 확인하고, 장애 상태에서도 데이터 접근이 가능한지 검증했습니다.
+```
+[root@Server-A ~]# cat /proc/mdstat
+Personalities : [raid4] [raid5] [raid6]
+md5 : active raid5 sdd1[5] sdf1[4] sdc1[1] sde1[2] sdb1[0](F)
+      314370048 blocks super 1.2 level 5, 512k chunk, algorithm 2 [4/4] [UUUU]
 
-RAID5에서는 다음 과정을 직접 확인했습니다.
-
-```text
-정상 RAID5 [UUU]
-        ↓
-디스크 1개 장애
-        ↓
-degraded [UU_]
-        ↓
-기존 데이터 읽기 성공
-        ↓
-새로운 데이터 쓰기 성공
-        ↓
-장애 디스크 제거 및 재추가
-        ↓
-RAID 복구
-        ↓
-정상 RAID5 [UUU]
-        ↓
-재부팅
-        ↓
-RAID 자동 조립 및 자동 마운트 확인
+unused devices: <none>
 ```
 
-또한 재부팅 후 `/dev/sdX` 장치명이 변경될 수 있다는 점을 확인했고, RAID 메타데이터와 UUID 기반 설정을 이용하여 안정적으로 RAID를 구성할 수 있음을 확인했습니다.
+상세 상태 확인
 
-> RAID는 디스크 장애에 대한 가용성을 높이기 위한 기술이며 백업을 대체하지 않습니다.
+```
+[root@Server-A ~]# mdadm --detail /dev/md5
+/dev/md5:
+              State : clean
+     Active Devices : 4
+    Working Devices : 4
+     Failed Devices : 1
+      Spare Devices : 0
+```
+
+기존 Hot Spare였던 `/dev/sdd1`이 다음과 같이 Active Disk로 변경되었다.
+
+장애 발생 후 Hot Spare가 자동으로 장애 디스크를 대체하여 RAID 5가 다시 정상 상태가 되는 것을 확인하였다.
+
+---
+
+### 21. RAID 5 장애 허용 한계 확인
+
+추가 디스크에 장애를 발생시킨 후 RAID 상태 확인
+
+```
+[root@Server-A ~]# mdadm --detail /dev/md5
+/dev/md5:
+              State : clean, FAILED
+     Active Devices : 2
+    Working Devices : 2
+     Failed Devices : 3
+      Spare Devices : 0
+```
+
+장치 상태
+
+```
+/dev/sdc1  faulty
+/dev/sde1  active sync
+/dev/sdf1  active sync
+
+/dev/sdb1  faulty
+/dev/sdd1  faulty
+```
+
+RAID 5는 현재 RAID를 구성하는 디스크 중 1개의 장애까지 허용할 수 있지만 장애 허용 범위를 초과하면 `FAILED` 상태가 되는 것을 확인하였다.
+
+Hot Spare는 장애 허용 개수를 증가시키는 것이 아니라 장애 발생 시 자동으로 교체 디스크를 투입하여 복구 시간을 줄이기 위한 기능이다.
+
+---
+
+### 22. RAID 6 구성
+
+기존 RAID 5를 정리하고 `/dev/sdb1~sdf1` 5개의 디스크를 이용하여 RAID 6을 구성하였다.
+
+```
+[root@Server-A ~]# mdadm --create /dev/md6 --level=6 --raid-devices=5 /dev/sdb1 /dev/sdc1 /dev/sdd1 /dev/sde1 /dev/sdf1
+```
+
+RAID 상태 확인
+
+```
+[root@Server-A ~]# mdadm --detail /dev/md6
+/dev/md6:
+           Version : 1.2
+        Raid Level : raid6
+        Array Size : 314370048 (299.81 GiB 321.91 GB)
+     Used Dev Size : 104790016 (99.94 GiB 107.30 GB)
+      Raid Devices : 5
+     Total Devices : 5
+              State : clean, resyncing
+     Active Devices : 5
+    Working Devices : 5
+     Failed Devices : 0
+      Spare Devices : 0
+             Layout : left-symmetric
+         Chunk Size : 512K
+
+     Resync Status : 1% complete
+```
+
+5개의 100G 디스크를 RAID 6으로 구성하여 약 300G의 사용 가능한 공간이 생성되는 것을 확인하였다.
+
+RAID 6은 2개 디스크 분량의 용량을 Parity에 사용한다.
+
+---
+
+### 23. RAID 6 파일시스템 생성 및 /RAID6 마운트
+
+ext4 파일시스템 생성
+
+```
+[root@Server-A ~]# mkfs.ext4 /dev/md6
+
+Filesystem UUID: b324e18e-7a67-4bb9-a697-210d484f2e17
+```
+
+마운트 디렉터리 생성 및 마운트
+
+```
+[root@Server-A ~]# mkdir /RAID6
+[root@Server-A ~]# mount /dev/md6 /RAID6
+```
+
+확인
+
+```
+[root@Server-A ~]# df -hT /RAID6
+Filesystem     Type  Size  Used Avail Use% Mounted on
+/dev/md6       ext4  295G   28K  280G   1% /RAID6
+```
+
+`/dev/md6`이 ext4 파일시스템으로 생성되어 `/RAID6`에 정상적으로 마운트되는 것을 확인하였다.
+
+---
+
+### 24. RAID 6 UUID 기반 /etc/fstab 영구 마운트 설정
+
+`/etc/fstab`에 다음 내용을 추가하였다.
+
+```
+UUID=b324e18e-7a67-4bb9-a697-210d484f2e17 /RAID6 ext4 defaults 0 0
+```
+
+설정 반영 및 재마운트
+
+```
+[root@Server-A ~]# systemctl daemon-reload
+[root@Server-A ~]# umount /RAID6
+[root@Server-A ~]# mount -a
+```
+
+확인
+
+```
+[root@Server-A ~]# df -hT /RAID6
+Filesystem     Type  Size  Used Avail Use% Mounted on
+/dev/md6       ext4  295G   28K  280G   1% /RAID6
+```
+
+RAID 6 영구 마운트 설정이 정상적으로 적용되는 것을 확인하였다.
+
+---
+
+### 25. RAID 6 장애 테스트용 데이터 저장
+
+`/etc`에서 `d`로 시작하는 파일과 디렉터리를 `/RAID6`에 복사하였다.
+
+```
+[root@Server-A ~]# cp -r /etc/d* /RAID6
+```
+
+확인
+
+```
+[root@Server-A ~]# ls -l /RAID6
+합계 84
+drwxr-xr-x. 4 root root  4096  9월 18 12:36 dbus-1
+drwxr-xr-x. 4 root root  4096  9월 18 12:36 dconf
+drwxr-xr-x. 2 root root  4096  9월 18 12:36 debuginfod
+drwxr-xr-x. 2 root root  4096  9월 18 12:36 default
+drwxr-xr-x. 2 root root  4096  9월 18 12:36 depmod.d
+drwxr-x---. 3 root root  4096  9월 18 12:36 dhcp
+drwxr-xr-x. 9 root root  4096  9월 18 12:36 dnf
+-rw-r--r--. 1 root root 27839  9월 18 12:36 dnsmasq.conf
+drwxr-xr-x. 2 root root  4096  9월 18 12:36 dnsmasq.d
+-rw-r--r--. 1 root root   117  9월 18 12:36 dracut.conf
+drwxr-xr-x. 2 root root  4096  9월 18 12:36 dracut.conf.d
+```
+
+장애 테스트에 사용할 데이터가 정상적으로 저장되는 것을 확인하였다.
+
+---
+
+### 26. RAID 6 첫 번째 디스크 장애 테스트
+
+RAID 6 정상 상태 확인
+
+```
+[root@Server-A ~]# mdadm --detail /dev/md6
+/dev/md6:
+              State : clean
+     Active Devices : 5
+    Working Devices : 5
+     Failed Devices : 0
+      Spare Devices : 0
+```
+
+`/dev/sdb1` 장애 발생
+
+```
+[root@Server-A ~]# mdadm --fail /dev/md6 /dev/sdb1
+```
+
+확인
+
+```
+[root@Server-A ~]# mdadm --detail /dev/md6
+/dev/md6:
+              State : clean, degraded
+     Active Devices : 4
+    Working Devices : 4
+     Failed Devices : 1
+      Spare Devices : 0
+```
+
+장애 디스크
+
+```
+/dev/sdb1  faulty
+```
+
+데이터 확인
+
+```
+[root@Server-A ~]# ls -l /RAID6
+합계 84
+drwxr-xr-x. 4 root root  4096  9월 18 12:36 dbus-1
+drwxr-xr-x. 4 root root  4096  9월 18 12:36 dconf
+drwxr-xr-x. 2 root root  4096  9월 18 12:36 debuginfod
+drwxr-xr-x. 2 root root  4096  9월 18 12:36 default
+drwxr-xr-x. 2 root root  4096  9월 18 12:36 depmod.d
+drwxr-x---. 3 root root  4096  9월 18 12:36 dhcp
+drwxr-xr-x. 9 root root  4096  9월 18 12:36 dnf
+-rw-r--r--. 1 root root 27839  9월 18 12:36 dnsmasq.conf
+drwxr-xr-x. 2 root root  4096  9월 18 12:36 dnsmasq.d
+-rw-r--r--. 1 root root   117  9월 18 12:36 dracut.conf
+drwxr-xr-x. 2 root root  4096  9월 18 12:36 dracut.conf.d
+```
+
+디스크 1개가 장애 상태여도 데이터가 정상적으로 유지되는 것을 확인하였다.
+
+---
+
+### 27. RAID 6 두 번째 디스크 장애 테스트
+
+두 번째 디스크 `/dev/sdc1`에 장애 발생
+
+```
+[root@Server-A ~]# mdadm --fail /dev/md6 /dev/sdc1
+```
+
+처음 RAID Device가 아닌 Mount Point를 입력하였다.
+
+```
+[root@Server-A ~]# mdadm --detail /RAID6
+mdadm: /RAID6 does not appear to be an md device
+```
+
+`/RAID6`는 Mount Point이고 RAID Device는 `/dev/md6`이므로 다음과 같이 다시 확인하였다.
+
+```
+[root@Server-A ~]# mdadm --detail /dev/md6
+/dev/md6:
+              State : clean, degraded
+     Active Devices : 3
+    Working Devices : 3
+     Failed Devices : 2
+      Spare Devices : 0
+```
+
+장치 상태
+
+```
+/dev/sdb1  faulty
+/dev/sdc1  faulty
+
+/dev/sdd1  active sync
+/dev/sde1  active sync
+/dev/sdf1  active sync
+```
+
+RAID 6은 디스크 2개가 동시에 장애 상태임에도 계속 동작하는 것을 확인하였다.
+
+---
+
+### 28. RAID 6 세 번째 디스크 장애 테스트
+
+세 번째 디스크 `/dev/sdd1`에 장애 발생
+
+```
+[root@Server-A ~]# mdadm --fail /dev/md6 /dev/sdd1
+```
+
+RAID 상태 확인
+
+```
+[root@Server-A ~]# mdadm --detail /dev/md6
+/dev/md6:
+              State : clean, FAILED
+     Active Devices : 2
+    Working Devices : 2
+     Failed Devices : 3
+      Spare Devices : 0
+```
+
+장치 상태
+
+```
+/dev/sdb1  faulty
+/dev/sdc1  faulty
+/dev/sdd1  faulty
+
+/dev/sde1  active sync
+/dev/sdf1  active sync
+```
+
+RAID 6은 디스크 2개 장애까지 허용하지만 3개의 디스크에 장애가 발생하면 `FAILED` 상태가 되는 것을 확인하였다.
+
+---
+
+### 29. RAID 상태 확인 명령어
+
+현재 동작 중인 Software RAID의 간단한 상태 확인
+
+```
+[root@Server-A ~]# cat /proc/mdstat
+```
+
+RAID 상세 상태 확인
+
+```
+[root@Server-A ~]# mdadm --detail /dev/md6
+```
+
+주요 RAID 상태
+
+`clean`
+
+정상적으로 모든 RAID 구성원이 동작하는 상태
+
+`clean, degraded`
+
+RAID 구성 디스크가 부족하지만 RAID가 아직 정상적으로 서비스를 제공할 수 있는 상태
+
+`clean, degraded, recovering`
+
+장애 디스크를 교체하거나 새로운 디스크를 추가하여 Rebuild가 진행 중인 상태
+
+`clean, FAILED`
+
+RAID Level이 허용할 수 있는 장애 디스크 개수를 초과하여 RAID가 정상적으로 동작할 수 없는 상태
+
+---
+
+### 30. RAID Level별 장애 허용 확인
+
+실습을 통해 RAID Level별 장애 허용 범위를 확인하였다.
+
+Linear RAID
+
+```
+장애 허용 없음
+```
+
+RAID 0
+
+```
+장애 허용 없음
+```
+
+RAID 10
+
+```
+Mirroring을 이용하여 디스크 장애 발생 시에도 데이터 유지 가능
+```
+
+RAID 5
+
+```
+디스크 1개 장애까지 허용
+```
+
+RAID 5 + Hot Spare
+
+```
+디스크 장애 발생 시 Spare Disk가 자동으로 투입되어 Rebuild 수행
+```
+
+RAID 6
+
+```
+디스크 2개 장애까지 허용
+```
+
+RAID 5의 Hot Spare는 RAID 자체의 장애 허용 개수를 늘리는 기능이 아니라 장애 발생 시 복구를 빠르게 시작하기 위한 예비 디스크라는 것을 확인하였다.
+
+---
+
+## 실습 결과
+
+* `fdisk`를 이용하여 Linux RAID용 파티션 생성
+* `mdadm`을 이용하여 Linear RAID 구성
+* RAID 0 Striping 구성 및 약 200G 저장 공간 확인
+* RAID 10 Mirroring + Striping 구성 및 약 200G 저장 공간 확인
+* RAID 5 구성 및 Parity를 제외한 약 300G 저장 공간 확인
+* RAID 6 구성 및 Double Parity를 제외한 약 300G 저장 공간 확인
+* `mkfs.ext4`를 이용하여 RAID 장치에 ext4 파일시스템 생성
+* `/linear`, `/RAID0`, `/RAID10`, `/RAID5`, `/RAID6` 마운트 구성
+* UUID를 이용하여 `/etc/fstab`에 영구 마운트 설정
+* `systemctl daemon-reload`, `mount -a`를 이용한 영구 마운트 동작 확인
+* `mdadm --fail`을 이용한 RAID 디스크 장애 상황 구성
+* RAID 10 장애 디스크 교체 및 Rebuild 과정 확인
+* RAID 5에서 디스크 1개 장애 발생 후 데이터 유지 확인
+* RAID 5 장애 디스크 `remove` 및 `add`를 통한 Rebuild 확인
+* RAID 5 Hot Spare 구성 및 장애 발생 시 Spare Disk 자동 투입 확인
+* RAID 5 장애 허용 범위를 초과하면 `FAILED` 상태가 되는 것을 확인
+* RAID 6에서 디스크 1개와 2개 장애 상태에서도 RAID 동작 확인
+* RAID 6에서 세 번째 디스크 장애 발생 시 `FAILED` 상태가 되는 것을 확인
+* `cat /proc/mdstat`, `mdadm --detail`을 이용하여 RAID 상태 확인
